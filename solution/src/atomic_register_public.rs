@@ -324,12 +324,48 @@ impl ARModule {
 
         let broadcast_header = SystemCommandHeader {
             process_identifier: self.process_id,
+
+            // TODO: what to do with this?
             msg_ident: Uuid::nil(),
             read_ident: self.read_id,
             sector_idx: cmd_header.sector_idx
 
         };
 
+        let content = SystemRegisterCommandContent::ReadProc;
+        self.broadcast(broadcast_header, content).await;
+    }
+
+    /*
+    upon event < nnar, Write | v > do
+        rid := rid + 1;
+        writeval := v;
+        acklist := [ _ ] `of length` N;
+        readlist := [ _ ] `of length` N;
+        writing := TRUE;
+        store(rid);
+        trigger < sbeb, Broadcast | [READ_PROC, rid] >;
+    */
+    async fn write(
+        &mut self,
+        cmd_header: ClientCommandHeader,
+        data:       SectorVec,
+    ) {
+        self.read_id += 1;
+        self.writeval = data.0;
+        self.acks = 0;
+        self.readlist = vec![];
+        self.state = ARState::Writing;
+        
+        let broadcast_header = SystemCommandHeader {
+            process_identifier: self.process_id,
+
+            // TODO: what to do with this?
+            msg_ident: Uuid::nil(),
+            read_ident: self.read_id,
+            sector_idx: cmd_header.sector_idx
+
+        };
         let content = SystemRegisterCommandContent::ReadProc;
         self.broadcast(broadcast_header, content).await;
     }
@@ -360,16 +396,7 @@ impl ARModule {
         writeval := _;
     */
 
-    /*
-    upon event < nnar, Write | v > do
-        rid := rid + 1;
-        writeval := v;
-        acklist := [ _ ] `of length` N;
-        readlist := [ _ ] `of length` N;
-        writing := TRUE;
-        store(rid);
-        trigger < sbeb, Broadcast | [READ_PROC, rid] >;
-    */
+    
 
 
 }
