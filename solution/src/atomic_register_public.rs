@@ -44,42 +44,28 @@ pub async fn build_atomic_register(
     unimplemented!()
 }
 
-fn highest<'a>(readlist: &'a Vec<SectorData>) -> &'a SectorData {
-    match readlist.iter().max() {
-        Some(data)  => data,
+fn highest(readlist: &Vec<SectorData>) -> &SectorData {
 
-        // Shouldn't happen, since `highest` will be called after pushing a value to `readlist`
-        None        => panic!("empty `readlist`"),
-    }
-}
-
-// SectorData -----------------------------------------------------------------
-#[derive(PartialEq, Eq)]
-struct SectorData {
-    timestamp:      u64,
-    write_rank:     u8,
-    sector_data:    SectorVec,
-}
-
-impl PartialOrd for SectorData {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        match self.timestamp.cmp(&other.timestamp) {
-            Ordering::Equal => Some(self.write_rank.cmp(&other.write_rank)),
-            ord             => Some(ord),
+    let mut max_ts = 0;
+    let mut max_wr = 0;
+    let mut index = 0;
+    for (i, (ts, wr, val)) in readlist.iter().enumerate() {
+        if *ts > max_ts { 
+            max_ts = *ts;
+            max_wr = *wr;
+            index = i;
+        } else if *wr > max_wr { 
+            max_ts = *ts;
+            max_wr = *wr;
+            index = i;
         }
     }
+
+    return &readlist[index];
 }
 
-impl Ord for SectorData {
-    fn cmp(&self, other: &Self) -> Ordering {
-        match self.timestamp.cmp(&other.timestamp) {
-            Ordering::Equal => self.write_rank.cmp(&other.write_rank),
-            ord             => ord,
-        }
-    }
-}
+type SectorData = (u64, u8, SectorVec);
 
-// ARState --------------------------------------------------------------------
 #[derive(PartialEq, Eq)]
 enum ARState {
     Reading,
@@ -87,7 +73,6 @@ enum ARState {
     Idle,
 }
 
-// ARModule -------------------------------------------------------------------
 struct ARModule {
     metadata:           Box<dyn StableStorage>,
     register_client:    Arc<dyn RegisterClient>,
@@ -99,19 +84,22 @@ struct ARModule {
     readlist:           Vec<SectorData>,
     acks:               u8,
     state:              ARState,
+    writeval:           Vec<u8>,
+    write_phase:        bool,
     
 }
 
 
 impl ARModule {
 
+
     async fn respond(
         &self, 
-        cmd_header: SystemCommandHeader, 
+        request_header: SystemCommandHeader, 
         content: SystemRegisterCommandContent, 
     ) {
         // TODO: leave the uuid the same or create unique?
-        let mut response_header = cmd_header.clone();
+        let mut response_header = request_header.clone();
 
         // TODO: are you sure `self_ident` (param of `build_atomic_register`) 
         // is the id of the process, not of the AR?
@@ -124,7 +112,7 @@ impl ARModule {
 
         let msg = register_client_public::Send {
             cmd: Arc::new(response_cmd),
-            target: cmd_header.process_identifier as usize,
+            target: request_header.process_identifier as usize,
         };
 
         self.register_client.send(msg).await;
@@ -160,7 +148,6 @@ impl ARModule {
         self.respond(cmd_header, SystemRegisterCommandContent::Ack).await
     }
 
-    
 }
 
 
