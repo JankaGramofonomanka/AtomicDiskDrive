@@ -7,6 +7,7 @@ use crate::{
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::cmp::{Eq, Ord, PartialOrd, PartialEq, Ordering};
 
 use crate::register_client_public;
 
@@ -43,29 +44,62 @@ pub async fn build_atomic_register(
     unimplemented!()
 }
 
+fn highest<'a>(readlist: &'a Vec<SectorData>) -> &'a SectorData {
+    match readlist.iter().max() {
+        Some(data)  => data,
+
+        // Shouldn't happen, since `highest` will be called after pushing a value to `readlist`
+        None        => panic!("empty `readlist`"),
+    }
+}
+
+// SectorData -----------------------------------------------------------------
+#[derive(PartialEq, Eq)]
 struct SectorData {
     timestamp:      u64,
     write_rank:     u8,
     sector_data:    SectorVec,
 }
 
+impl PartialOrd for SectorData {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        match self.timestamp.cmp(&other.timestamp) {
+            Ordering::Equal => Some(self.write_rank.cmp(&other.write_rank)),
+            ord             => Some(ord),
+        }
+    }
+}
+
+impl Ord for SectorData {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match self.timestamp.cmp(&other.timestamp) {
+            Ordering::Equal => self.write_rank.cmp(&other.write_rank),
+            ord             => ord,
+        }
+    }
+}
+
+// ARState --------------------------------------------------------------------
+#[derive(PartialEq, Eq)]
 enum ARState {
     Reading,
     Writing,
     Idle,
 }
 
-
+// ARModule -------------------------------------------------------------------
 struct ARModule {
     metadata:           Box<dyn StableStorage>,
     register_client:    Arc<dyn RegisterClient>,
     sectors_manager:    Arc<dyn SectorsManager>,
+    processes_count:    u8,
 
     process_id:         u8,
     read_id:            u64,
     readlist:           Vec<SectorData>,
     acks:               u8,
     state:              ARState,
+    
 }
 
 
@@ -111,10 +145,10 @@ impl ARModule {
 
     async fn write_proc(
         &self, 
-        cmd_header: SystemCommandHeader,
-        timestamp: u64,
-        write_rank: u8,
-        data_to_write: SectorVec,
+        cmd_header:     SystemCommandHeader,
+        timestamp:      u64,
+        write_rank:     u8,
+        data_to_write:  SectorVec,
     ) {
         let (ts, wr) = self.sectors_manager.read_metadata(cmd_header.sector_idx).await;
         if timestamp > ts || (timestamp == ts && write_rank > wr) {
@@ -125,6 +159,8 @@ impl ARModule {
         }
         self.respond(cmd_header, SystemRegisterCommandContent::Ack).await
     }
+
+    
 }
 
 
