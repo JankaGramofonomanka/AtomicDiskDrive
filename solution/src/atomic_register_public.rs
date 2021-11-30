@@ -92,23 +92,46 @@ struct ARModule {
 
 impl ARModule {
 
+    fn prepare_cmd(&self, 
+        header: SystemCommandHeader,
+        content: SystemRegisterCommandContent,
+    ) -> SystemRegisterCommand {
+        
+        // TODO: leave the uuid the same or create unique?
+        let mut prep_header = header.clone();
+
+        // TODO: are you sure `self_ident` (param of `build_atomic_register`) 
+        // is the id of the process, not of the AR?
+        prep_header.process_identifier = self.process_id;
+
+        let cmd = SystemRegisterCommand {
+            header: prep_header,
+            content: content,
+        };
+
+        cmd
+
+    }
+
+    async fn broadcast(
+        &self, 
+        header: SystemCommandHeader,
+        content: SystemRegisterCommandContent,
+    ) {
+        let broadcast_cmd = self.prepare_cmd(header, content);
+
+        let msg = register_client_public::Broadcast {
+            cmd: Arc::new(broadcast_cmd),
+        };
+        self.register_client.broadcast(msg).await
+    }
 
     async fn respond(
         &self, 
         request_header: SystemCommandHeader, 
         content: SystemRegisterCommandContent, 
     ) {
-        // TODO: leave the uuid the same or create unique?
-        let mut response_header = request_header.clone();
-
-        // TODO: are you sure `self_ident` (param of `build_atomic_register`) 
-        // is the id of the process, not of the AR?
-        response_header.process_identifier = self.process_id;
-
-        let response_cmd = SystemRegisterCommand {
-            header: response_header,
-            content: content,
-        };
+        let response_cmd = self.prepare_cmd(request_header, content);
 
         let msg = register_client_public::Send {
             cmd: Arc::new(response_cmd),
@@ -148,6 +171,66 @@ impl ARModule {
         self.respond(cmd_header, SystemRegisterCommandContent::Ack).await
     }
 
+    async fn value(
+        &mut self, 
+        cmd_header:     SystemCommandHeader,
+        timestamp:      u64,
+        write_rank:     u8,
+        sector_data:    SectorVec,
+    ) {
+        if self.write_phase { return; }
+        if cmd_header.read_ident != self.read_id { return; }
+
+        self.readlist.push((timestamp, write_rank, sector_data));
+
+        if self.state != ARState::Idle 
+        && self.readlist.len() as u8 > self.processes_count / 2 
+        {
+            let (ts, wr) = self.sectors_manager.read_metadata(cmd_header.sector_idx).await;
+            let val = self.sectors_manager.read_data(cmd_header.sector_idx).await;
+
+            self.readlist.push((ts, wr, val));
+
+            let readlist: Vec<SectorData> = self.readlist.drain(..).collect();
+            let (maxts, maxwr, readval) = highest(&readlist);
+            self.acks = 0;
+
+            self.write_phase = true;
+
+            match self.state {
+                ARState::Idle => panic!("implossible case"),
+
+                ARState::Reading => {
+
+                    let content = SystemRegisterCommandContent::WriteProc {
+                        timestamp:      *maxts,
+                        write_rank:     *maxwr,
+                        data_to_write:  readval.clone(),
+                    };
+
+                    self.broadcast(cmd_header, content).await
+                }
+
+                ARState::Writing => {
+                    let writeval = SectorVec(self.writeval.drain(..).collect());
+                    self.sectors_manager.write(
+                        cmd_header.sector_idx, 
+                        &(writeval.clone(), maxts + 1, self.process_id)
+                    ).await;
+
+                    let content = SystemRegisterCommandContent::WriteProc {
+                        timestamp:      *maxts + 1,
+
+                        // TODO: Are you sure `self.process_id` is the same as "rank(self)"?
+                        write_rank:     self.process_id, 
+                        data_to_write:  writeval,
+                    };
+
+                    self.broadcast(cmd_header, content).await
+                }
+            }
+        }
+    }
 }
 
 
@@ -176,7 +259,7 @@ impl AtomicRegister for ARModule {
             SystemRegisterCommandContent::ReadProc => self.read_proc(cmd_header).await,
             
             SystemRegisterCommandContent::Value { timestamp, write_rank, sector_data, } 
-                => unimplemented!(),
+                => self.value(cmd_header, timestamp, write_rank, sector_data).await,
 
             SystemRegisterCommandContent::WriteProc { timestamp, write_rank, data_to_write, }
                 => self.write_proc(cmd_header, timestamp, write_rank, data_to_write).await,
