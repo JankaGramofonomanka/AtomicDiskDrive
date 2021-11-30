@@ -2,12 +2,15 @@
 use crate::{
     ClientRegisterCommand, OperationComplete, RegisterClient, SectorsManager, StableStorage,
     SystemRegisterCommand, 
-    SectorVec, SystemCommandHeader, SystemRegisterCommandContent
+    SectorVec, SystemCommandHeader, SystemRegisterCommandContent,
+    ClientCommandHeader,
 };
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+
 use std::cmp::{Eq, Ord, PartialOrd, PartialEq, Ordering};
+use uuid::Uuid;
 
 use crate::register_client_public;
 
@@ -301,6 +304,36 @@ impl ARModule {
         }
     }
 
+    /*
+    upon event < nnar, Read > do
+        rid := rid + 1;
+        store(rid);
+        readlist := [ _ ] `of length` N;
+        acklist := [ _ ] `of length` N;
+        reading := TRUE;
+        trigger < sbeb, Broadcast | [READ_PROC, rid] >;
+    */
+    async fn read(
+        &mut self,
+        cmd_header: ClientCommandHeader,
+    ) {
+        self.read_id += 1;
+        self.readlist = vec![];
+        self.acks = 0;
+        self.state = ARState::Reading;
+
+        let broadcast_header = SystemCommandHeader {
+            process_identifier: self.process_id,
+            msg_ident: Uuid::nil(),
+            read_ident: self.read_id,
+            sector_idx: cmd_header.sector_idx
+
+        };
+
+        let content = SystemRegisterCommandContent::ReadProc;
+        self.broadcast(broadcast_header, content).await;
+    }
+
     /* 
     upon event < nnar, Init > do
         (ts, wr, val) := (0, 0, _);
@@ -325,16 +358,6 @@ impl ARModule {
         write_phase := FALSE;
         writing := FALSE;
         writeval := _;
-    */
-
-    /*
-    upon event < nnar, Read > do
-        rid := rid + 1;
-        store(rid);
-        readlist := [ _ ] `of length` N;
-        acklist := [ _ ] `of length` N;
-        reading := TRUE;
-        trigger < sbeb, Broadcast | [READ_PROC, rid] >;
     */
 
     /*
