@@ -85,6 +85,7 @@ struct ARModule {
     acks:               u8,
     state:              ARState,
     writeval:           Vec<u8>,
+    readval:            SectorVec,
     write_phase:        bool,
     
 }
@@ -222,6 +223,7 @@ impl ARModule {
 
             let readlist: Vec<SectorData> = self.readlist.drain(..).collect();
             let (maxts, maxwr, readval) = highest(&readlist);
+            self.readval = readval.clone();
             self.acks = 0;
 
             self.write_phase = true;
@@ -256,6 +258,44 @@ impl ARModule {
                     };
 
                     self.broadcast(cmd_header, content).await
+                }
+            }
+        }
+    }
+
+    /*
+    upon event < sl, Deliver | q, [ACK, r] > such that r == rid and write_phase do
+        acklist[q] := Ack;
+        if #(acklist) > N / 2 and (reading or writing) then
+            acklist := [ _ ] `of length` N;
+            write_phase := FALSE;
+            if reading = TRUE then
+                reading := FALSE;
+                trigger < nnar, ReadReturn | readval >;
+            else
+                writing := FALSE;
+                trigger < nnar, WriteReturn >;
+    */
+    async fn ack(
+        &mut self,
+        cmd_header: SystemCommandHeader,
+    ) {
+        self.acks += 1;
+        if self.state != ARState::Idle && self.acks > self.processes_count / 2 {
+            self.acks = 0;
+            self.write_phase = false;
+
+            match self.state {
+                ARState::Idle => panic!("implossible case"),
+
+                ARState::Reading => {
+                    self.state = ARState::Idle;
+                    // TODO: trigger < nnar, ReadReturn | readval >;
+                }
+
+                ARState::Writing => {
+                    self.state = ARState::Idle;
+                    // TODO: trigger < nnar, WriteReturn >;
                 }
             }
         }
@@ -308,19 +348,7 @@ impl ARModule {
         trigger < sbeb, Broadcast | [READ_PROC, rid] >;
     */
 
-    /*
-    upon event < sl, Deliver | q, [ACK, r] > such that r == rid and write_phase do
-        acklist[q] := Ack;
-        if #(acklist) > N / 2 and (reading or writing) then
-            acklist := [ _ ] `of length` N;
-            write_phase := FALSE;
-            if reading = TRUE then
-                reading := FALSE;
-                trigger < nnar, ReadReturn | readval >;
-            else
-                writing := FALSE;
-                trigger < nnar, WriteReturn >;
-    */
+
 }
 
 
@@ -354,7 +382,8 @@ impl AtomicRegister for ARModule {
             SystemRegisterCommandContent::WriteProc { timestamp, write_rank, data_to_write, }
                 => self.write_proc(cmd_header, timestamp, write_rank, data_to_write).await,
 
-            SystemRegisterCommandContent::Ack => unimplemented!(),
+            SystemRegisterCommandContent::Ack
+                => self.ack(cmd_header).await,
         }
     }
 }
