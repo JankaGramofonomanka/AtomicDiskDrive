@@ -45,7 +45,16 @@ pub async fn build_atomic_register(
     sectors_manager: Arc<dyn SectorsManager>,
     processes_count: usize,
 ) -> Box<dyn AtomicRegister> {
-    unimplemented!()
+
+    let armod = ARModule::new(
+        self_ident,
+        metadata,
+        register_client,
+        sectors_manager,
+        processes_count,
+    ).await;
+
+    Box::new(armod)
 }
 
 fn highest(readlist: &Vec<SectorData>) -> &SectorData {
@@ -410,6 +419,40 @@ impl ARModule {
         write_phase := FALSE;
         store(wr, ts, val, rid);
     */
+    async fn new(
+        self_ident: u8,
+        metadata: Box<dyn StableStorage>,
+        register_client: Arc<dyn RegisterClient>,
+        sectors_manager: Arc<dyn SectorsManager>,
+        processes_count: usize,
+
+    ) -> Self {
+        ARModule {
+            metadata:           metadata,
+            register_client:    register_client,
+            sectors_manager:    sectors_manager,
+            processes_count:    processes_count as u8,
+        
+            process_id:         self_ident,
+            read_id:            0,
+            readlist:           vec![],
+            acks:               0,
+            state:              ARState::Idle,
+
+            // TODO: doesn't make sense, wrap in `Option`
+            writeval:           vec![],
+
+            // TODO: doesn't make sense, wrap in `Option`
+            readval:            SectorVec(vec![]),
+            write_phase:        false,
+        
+            callback_op:        None,
+
+            // TODO: doesn't make sense, wrap in `Option`
+            request_id:         0,
+            
+        }
+    }
 
     /*
     upon event < nnar, Recovery > do
