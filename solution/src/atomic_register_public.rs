@@ -97,8 +97,8 @@ struct ARModule {
     readlist:           Vec<SectorData>,
     acks:               u8,
     state:              ARState,
-    writeval:           Vec<u8>,
-    readval:            SectorVec,
+    writeval:           Option<SectorVec>,
+    readval:            Option<SectorVec>,
     write_phase:        bool,
 
     callback_op:        Option<Box<
@@ -107,7 +107,7 @@ struct ARModule {
                                 + Send
                                 + Sync,
                         >>,
-    request_id:         u64,
+    request_id:         Option<u64>,
     
 }
 
@@ -164,9 +164,14 @@ impl ARModule {
     }
 
     async fn callback(&mut self, op_return: OperationReturn) {
+        let request_id = match self.request_id {
+            Some(id) => id,
+            None => panic!("`request_id` not defined"),
+        };
+        
         let op_complete = OperationComplete {
             status_code: StatusCode::Ok,
-            request_identifier: self.request_id,
+            request_identifier: request_id,
             op_return: op_return,
         };
         
@@ -257,7 +262,7 @@ impl ARModule {
 
             let readlist: Vec<SectorData> = self.readlist.drain(..).collect();
             let (maxts, maxwr, readval) = highest(&readlist);
-            self.readval = readval.clone();
+            self.readval = Some(readval.clone());
             self.acks = 0;
 
             self.write_phase = true;
@@ -277,7 +282,12 @@ impl ARModule {
                 }
 
                 ARState::Writing => {
-                    let writeval = SectorVec(self.writeval.drain(..).collect());
+                    
+                    let writeval = match self.writeval.take() {
+                        Some(val) => val,
+                        None => panic!("`writeval` is `None`"),
+                    };
+
                     self.sectors_manager.write(
                         cmd_header.sector_idx, 
                         &(writeval.clone(), maxts + 1, self.process_id)
@@ -327,7 +337,8 @@ impl ARModule {
                 ARState::Reading => {
                     self.state = ARState::Idle;
 
-                    let read_ret = ReadReturn { read_data: Some(self.readval.clone()) } ;
+                    // TODO: shouldn't you panic if `self.readval == None`?
+                    let read_ret = ReadReturn { read_data: self.readval.take() } ;
                     self.callback(OperationReturn::Read(read_ret)).await;
                 }
 
@@ -388,7 +399,7 @@ impl ARModule {
         data:       SectorVec,
     ) {
         self.read_id += 1;
-        self.writeval = data.0;
+        self.writeval = Some(data);
         self.acks = 0;
         self.readlist = vec![];
         self.state = ARState::Writing;
@@ -438,18 +449,12 @@ impl ARModule {
             readlist:           vec![],
             acks:               0,
             state:              ARState::Idle,
-
-            // TODO: doesn't make sense, wrap in `Option`
-            writeval:           vec![],
-
-            // TODO: doesn't make sense, wrap in `Option`
-            readval:            SectorVec(vec![]),
+            writeval:           None,
+            readval:            None,
             write_phase:        false,
         
             callback_op:        None,
-
-            // TODO: doesn't make sense, wrap in `Option`
-            request_id:         0,
+            request_id:         None,
             
         }
     }
@@ -488,7 +493,7 @@ impl AtomicRegister for ARModule {
         >,
     ) {
         self.callback_op = Some(operation_complete);
-        self.request_id = cmd.header.request_identifier;
+        self.request_id = Some(cmd.header.request_identifier);
 
         let cmd_header = cmd.header;
         match cmd.content {
