@@ -168,7 +168,7 @@ impl ARModule {
             Some(id) => id,
             None => panic!("`request_id` not defined"),
         };
-        
+
         let op_complete = OperationComplete {
             status_code: StatusCode::Ok,
             request_identifier: request_id,
@@ -459,6 +459,7 @@ impl ARModule {
         }
     }
 
+    // TODO: for now there is nothing to recover but probably there will be
     /*
     upon event < nnar, Recovery > do
         retrieve(wr, ts, val, rid);
