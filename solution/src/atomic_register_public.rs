@@ -3,7 +3,8 @@ use crate::{
     ClientRegisterCommand, OperationComplete, RegisterClient, SectorsManager, StableStorage,
     SystemRegisterCommand, 
     SectorVec, SystemCommandHeader, SystemRegisterCommandContent,
-    ClientCommandHeader,
+    ClientCommandHeader, StatusCode, OperationReturn, ReadReturn,
+    ClientRegisterCommandContent
 };
 use std::future::Future;
 use std::pin::Pin;
@@ -90,6 +91,14 @@ struct ARModule {
     writeval:           Vec<u8>,
     readval:            SectorVec,
     write_phase:        bool,
+
+    callback_op:        Option<Box<
+                            dyn FnOnce(OperationComplete)
+                                -> Pin<Box<dyn Future<Output = ()> + Send>>
+                                + Send
+                                + Sync,
+                        >>,
+    request_id:         u64,
     
 }
 
@@ -145,6 +154,19 @@ impl ARModule {
         self.register_client.send(msg).await;
     }
 
+    async fn callback(&mut self, op_return: OperationReturn) {
+        let op_complete = OperationComplete {
+            status_code: StatusCode::Ok,
+            request_identifier: self.request_id,
+            op_return: op_return,
+        };
+        
+        let some_callback = self.callback_op.take();
+        match some_callback {
+            None => panic!("`operation_complete` undefined"),
+            Some(callb) => callb(op_complete).await,
+        }
+    }
 
 
     /*
@@ -283,6 +305,8 @@ impl ARModule {
         &mut self,
         cmd_header: SystemCommandHeader,
     ) {
+        if cmd_header.read_ident != self.read_id { return; }
+
         self.acks += 1;
         if self.state != ARState::Idle && self.acks > self.processes_count / 2 {
             self.acks = 0;
@@ -293,12 +317,15 @@ impl ARModule {
 
                 ARState::Reading => {
                     self.state = ARState::Idle;
-                    // TODO: trigger < nnar, ReadReturn | readval >;
+
+                    let read_ret = ReadReturn { read_data: Some(self.readval.clone()) } ;
+                    self.callback(OperationReturn::Read(read_ret)).await;
                 }
 
                 ARState::Writing => {
                     self.state = ARState::Idle;
-                    // TODO: trigger < nnar, WriteReturn >;
+
+                    self.callback(OperationReturn::Write).await;
                 }
             }
         }
@@ -417,7 +444,17 @@ impl AtomicRegister for ARModule {
                 + Sync,
         >,
     ) {
-        unimplemented!();
+        self.callback_op = Some(operation_complete);
+        self.request_id = cmd.header.request_identifier;
+
+        let cmd_header = cmd.header;
+        match cmd.content {
+            ClientRegisterCommandContent::Read
+                => self.read(cmd_header).await,
+
+            ClientRegisterCommandContent::Write { data }
+                => self.write(cmd_header, data).await,
+        }
     }
 
     /// Send system command to the register.
