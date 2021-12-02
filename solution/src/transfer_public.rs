@@ -70,21 +70,7 @@ fn calculate_hmac_tag(message: &[u8], secret_key: &[u8]) -> [u8; 32] {
     tag.into()
 }
 
-// ----------------------------------------------------------------------------
-fn system_content(timestamp: &u64, write_rank: &u8, sector_data: &SectorVec) -> Vec<u8> {
-                        
 
-    let padding = [0; READ_WRITE_PROC_PADDING_LENGTH];
-
-    [
-        &timestamp.to_be_bytes()[..],
-        &padding[..],
-        &[*write_rank][..],
-
-        &sector_data.0[..]
-
-    ].concat()
-}
 
 // ----------------------------------------------------------------------------
 pub async fn deserialize_register_command(
@@ -357,7 +343,7 @@ pub async fn serialize_register_command(
                 &content[..],
             ].concat();
             
-            
+
             let hmac_tag = calculate_hmac_tag(&message, hmac_key);
 
             writer.write_all(&message).await?;
@@ -368,3 +354,18 @@ pub async fn serialize_register_command(
     Ok(())
 }
 
+
+fn system_content(timestamp: &u64, write_rank: &u8, sector_data: &SectorVec) -> Vec<u8> {
+                        
+
+    let padding = [0; READ_WRITE_PROC_PADDING_LENGTH];
+
+    [
+        &timestamp.to_be_bytes()[..],
+        &padding[..],
+        &[*write_rank][..],
+
+        &sector_data.0[..]
+
+    ].concat()
+}
