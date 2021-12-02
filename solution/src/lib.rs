@@ -4,6 +4,7 @@ mod sectors_manager_public;
 mod transfer_public;
 mod register_client_public;
 mod stable_storage_public;
+mod atomic_storage;
 
 pub use crate::domain::*;
 pub use atomic_register_public::*;
