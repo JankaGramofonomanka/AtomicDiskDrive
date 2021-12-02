@@ -5,6 +5,7 @@ mod transfer_public;
 mod register_client_public;
 mod stable_storage_public;
 mod atomic_storage;
+mod constants;
 
 pub use crate::domain::*;
 pub use atomic_register_public::*;

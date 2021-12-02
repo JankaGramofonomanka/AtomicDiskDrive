@@ -27,7 +27,7 @@ impl AtomicStorage {
 
     // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
     /// Atomically stores `value` in `{self.dir}/{filename}`
-    pub async fn store_atomic(&mut self, filename: impl AsRef<Path>, value: &[u8])
+    pub async fn store_atomic(&self, filename: impl AsRef<Path>, value: &[u8])
         -> Result<(), String> {
 
         let tmpfile_path = self.get_path(TMPFILE);
@@ -49,14 +49,25 @@ impl AtomicStorage {
         Ok(())
     }
 
-    pub async fn read(&self, filename: impl AsRef<Path>) -> Option<Vec<u8>> {
+    pub async fn read(&self, filename: impl AsRef<Path>, num_bytes: Option<usize>) 
+        -> Option<Vec<u8>> {
         
         let file_path = self.get_path(filename);
 
         if file_path.is_file() {
             let mut file = File::open(file_path).await.unwrap();
             let mut file_contents: Vec<u8> = vec![];
-            file.read_to_end(&mut file_contents).await.unwrap();
+
+            match num_bytes {
+                None    => {
+                    file.read_to_end(&mut file_contents).await.unwrap();
+                },
+
+                Some(n) => {
+                    file_contents = vec![0; n];
+                    file.read_exact(&mut file_contents).await.unwrap();
+                },
+            }
 
             Some(file_contents)
 

@@ -9,25 +9,9 @@ use hmac::{Hmac, Mac, NewMac};
 use sha2::Sha256;
 use uuid::Uuid;
 use std::convert::TryInto;
+use crate::constants::*;
 
-const CLIENT_REQUEST_PADDING_LENGTH: usize = 8 - 4 - 1;
-const CLIENT_RESPONSE_PADDING_LENGTH: usize = 8 - 4 - 2;
-const SYSTEM_PADDING_LENGTH: usize = 8 - 4 - 2;
-const READ_WRITE_PROC_PADDING_LENGTH: usize = 8 - 1;
 
-const CONTENT_LENGTH: usize = 4096;
-const SYSTEM_CONTENT_LENGTH: usize = CONTENT_LENGTH + 16;
-
-const READ_TYPE:        u8 = 0x01;
-const WRITE_TYPE:       u8 = 0x02;
-
-const READ_PROC_TYPE:   u8 = 0x03;
-const VALUE_TYPE:       u8 = 0x04;
-const WRITE_PROC_TYPE:  u8 = 0x05;
-const ACK_TYPE:         u8 = 0x06;
-
-const MAX_TYPE:         u8 = ACK_TYPE;
-const MIN_TYPE:         u8 = READ_TYPE;
 
 #[allow(non_snake_case)]
 fn INVALID(msg_type: u8) -> bool {
