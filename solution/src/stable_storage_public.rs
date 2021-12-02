@@ -10,11 +10,11 @@ pub trait StableStorage: Send + Sync {
 }
 
 use std::path::PathBuf;
-// You can add here other imports from std or crates listed in Cargo.toml.
-use std::path::Path;
 use std::collections::HashMap;
-use tokio::fs::{File, rename};
-use tokio::io::{AsyncWriteExt, AsyncReadExt, ErrorKind};
+use tokio::fs::File;
+use tokio::io::{AsyncReadExt, ErrorKind};
+
+use crate::atomic_storage::AtomicStorage;
 
 // You can add any private types, structs, consts, functions, methods, etc., you need.
 const MAX_KEY_SIZE: usize = 255;
@@ -37,7 +37,7 @@ fn MK_FILENAME(num: Nat) -> String {
 
 
 struct Storage {
-    dir: PathBuf,
+    storage: AtomicStorage,
     map: HashMap<String, Nat>,
     next_file_num: Nat,
 }
@@ -47,7 +47,7 @@ impl Storage {
     async fn new(dir: PathBuf) -> Self {
         
         let mut res = Storage {
-            dir: dir,
+            storage: AtomicStorage::new(dir),
             map: HashMap::new(),
             next_file_num: 0,
         };
@@ -57,36 +57,6 @@ impl Storage {
         res
     }
 
-    fn get_path(&self, filename: impl AsRef<Path>) -> PathBuf {
-        let mut dir = self.dir.clone();
-        dir.push(filename);
-        dir
-    }
-
-    // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
-    /// Atomically stores `value` in `{self.dir}/{filename}`
-    async fn store_atomic(&mut self, filename: impl AsRef<Path>, value: &[u8])
-        -> Result<(), String> {
-
-        let tmpfile_path = self.get_path(TMPFILE);
-
-        {
-            let mut tmpfile = File::create(tmpfile_path.clone()).await.unwrap();
-            tmpfile.write_all(value).await.unwrap();
-            tmpfile.sync_data().await.unwrap();
-        }
-
-        let file_path = self.get_path(filename);
-        
-        rename(tmpfile_path, file_path).await.unwrap();
-        
-        
-        let dir = File::open(self.dir.clone()).await.unwrap();
-        dir.sync_data().await.unwrap();
-
-        Ok(())
-    }
-
     // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
     /// Inserts a new key to the runtime map and to the file with all keys
     async fn insert_key(&mut self, key: &str) -> Result<(), String> {
@@ -94,7 +64,7 @@ impl Storage {
         self.next_file_num += 1;
 
         // read keys file
-        let keys_file_path = self.get_path(KEYSFILE);
+        let keys_file_path = self.storage.get_path(KEYSFILE);
         let mut keys_file = File::open(keys_file_path).await.unwrap();
         let mut keys_file_contents: Vec<u8> = vec![];
         keys_file.read_to_end(&mut keys_file_contents).await.unwrap();
@@ -107,7 +77,7 @@ impl Storage {
         keys_file_contents.append(&mut key.to_vec());
 
         // write to file
-        self.store_atomic(KEYSFILE, &keys_file_contents[..]).await.unwrap();
+        self.storage.store_atomic(KEYSFILE, &keys_file_contents[..]).await.unwrap();
 
         // update the runtime map
         let k = String::from_utf8(key.to_vec()).unwrap();
@@ -121,7 +91,7 @@ impl Storage {
     /// Fills the runtime map based on the file with keys
     async fn restore_keys(&mut self) -> Result<(), String> {
         
-        let keys_file_path = self.get_path(KEYSFILE);
+        let keys_file_path = self.storage.get_path(KEYSFILE);
         
         match File::open(keys_file_path.clone()).await {
             
@@ -182,7 +152,7 @@ impl Storage {
         // atomically store the value
         let file_num = self.map[&k];
         let filename = MK_FILENAME(file_num);
-        self.store_atomic(filename, value).await.unwrap();
+        self.storage.store_atomic(filename, value).await.unwrap();
 
         Ok(())
     }
@@ -200,7 +170,7 @@ impl Storage {
         
         // otherwise read the file corresponding to `key` and return its contents
         let file_num = self.map[&k];
-        let file_path = self.get_path(MK_FILENAME(file_num));
+        let file_path = self.storage.get_path(MK_FILENAME(file_num));
 
         let mut file = File::open(file_path).await.unwrap();
         let mut file_contents: Vec<u8> = vec![];
