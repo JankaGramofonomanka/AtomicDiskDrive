@@ -1,27 +1,25 @@
 
-use std::path::PathBuf;
-use std::path::Path;
-use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use tokio::fs::{File, rename};
 use tokio::io::{AsyncWriteExt, AsyncReadExt, ErrorKind};
 
 const TMPFILE: &str = "tmpfile";
 
 
-struct AtomicStorage {
+pub struct AtomicStorage {
     dir: PathBuf,
 }
 
 impl AtomicStorage {
 
-    async fn new(dir: PathBuf) -> Self {
+    pub fn new(dir: PathBuf) -> Self {
         
         AtomicStorage {
             dir: dir,
         }
     }
 
-    fn get_path(&self, filename: impl AsRef<Path>) -> PathBuf {
+    pub fn get_path(&self, filename: impl AsRef<Path>) -> PathBuf {
         let mut dir = self.dir.clone();
         dir.push(filename);
         dir
@@ -29,7 +27,7 @@ impl AtomicStorage {
 
     // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
     /// Atomically stores `value` in `{self.dir}/{filename}`
-    async fn store_atomic(&mut self, filename: impl AsRef<Path>, value: &[u8])
+    pub async fn store_atomic(&mut self, filename: impl AsRef<Path>, value: &[u8])
         -> Result<(), String> {
 
         let tmpfile_path = self.get_path(TMPFILE);
@@ -51,7 +49,7 @@ impl AtomicStorage {
         Ok(())
     }
 
-    async fn read(&self, filename: impl AsRef<Path>) -> Option<Vec<u8>> {
+    pub async fn read(&self, filename: impl AsRef<Path>) -> Option<Vec<u8>> {
         
         let file_path = self.get_path(filename);
 
