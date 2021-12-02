@@ -265,8 +265,9 @@ pub async fn serialize_register_command(
                 ClientRegisterCommandContent::Write { data: _ } => WRITE_TYPE,
             };
 
+            let empty_vec = vec![];
             let content = match &cmd.content {
-                ClientRegisterCommandContent::Read              => &vec![],
+                ClientRegisterCommandContent::Read              => &empty_vec,
 
                 // TODO: check if legth of `content.length` equals `CONTENT_LENGTH`?
                 ClientRegisterCommandContent::Write { data }    => &data.0,
