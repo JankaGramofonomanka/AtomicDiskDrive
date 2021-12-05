@@ -56,7 +56,7 @@ fn calculate_hmac_tag(message: &[u8], secret_key: &[u8]) -> [u8; 32] {
 
 
 
-// ----------------------------------------------------------------------------
+// deserialization ------------------------------------------------------------
 pub async fn deserialize_register_command(
     data: &mut (dyn AsyncRead + Send + Unpin),
     hmac_system_key: &[u8; 64],
@@ -229,7 +229,7 @@ pub async fn deserialize_register_command(
 
 
 
-// ----------------------------------------------------------------------------
+// serialization --------------------------------------------------------------
 pub async fn serialize_register_command(
     cmd: &RegisterCommand,
     writer: &mut (dyn AsyncWrite + Send + Unpin),
@@ -237,108 +237,123 @@ pub async fn serialize_register_command(
 ) -> Result<(), Error> {
 
 
-    // TODO: calculate hmac tag instead of serializing `hmac_key`
-
     match cmd {
-        RegisterCommand::Client(cmd) => {
+        RegisterCommand::Client(cmd)
+            => serialize_client_command(cmd, writer, hmac_key).await?,
 
-            
-            let padding = [0; CLIENT_REQUEST_PADDING_LENGTH];
-            let msg_type = match cmd.content {
-                ClientRegisterCommandContent::Read              => READ_TYPE,
-                ClientRegisterCommandContent::Write { data: _ } => WRITE_TYPE,
-            };
-
-            let empty_vec = vec![];
-            let content = match &cmd.content {
-                ClientRegisterCommandContent::Read              => &empty_vec,
-
-                // TODO: check if legth of `content.length` equals `CONTENT_LENGTH`?
-                ClientRegisterCommandContent::Write { data }    => &data.0,
-            };
-
-            let message = [
-                &MAGIC_NUMBER[..],
-                &padding[..],
-                &[msg_type][..],
-
-                &cmd.header.request_identifier.to_be_bytes()[..],
-                &cmd.header.sector_idx.to_be_bytes()[..],
-
-                &content[..],
-            ].concat();
-
-            let hmac_tag = calculate_hmac_tag(&message, hmac_key);
-
-            let msg = [&message[..], &hmac_tag[..]].concat();
-            writer.write_all(&msg).await?;
-            
-        }
-
-        RegisterCommand::System(cmd) => {
-            let padding = [0; SYSTEM_PADDING_LENGTH];
-            let msg_type = match &cmd.content {
-                SystemRegisterCommandContent::ReadProc => READ_PROC_TYPE,
-                SystemRegisterCommandContent::Value {
-                        timestamp: _,
-                        write_rank: _,
-                        sector_data: _,
-                    } => VALUE_TYPE,
-
-                SystemRegisterCommandContent::WriteProc {
-                        timestamp: _,
-                        write_rank: _,
-                        data_to_write: _,
-                    } => WRITE_PROC_TYPE,
-
-                SystemRegisterCommandContent::Ack => ACK_TYPE,
-            };
-
-            let content = match &cmd.content {
-                SystemRegisterCommandContent::ReadProc => vec![],
-
-                // TODO: check if legth of `sectr_data` equals `CONTENT_LENGTH`?
-                SystemRegisterCommandContent::Value {
-                        timestamp,
-                        write_rank,
-                        sector_data,
-                    } => system_content(timestamp, write_rank, sector_data),
-
-                // TODO: check if legth of `data_to_write` equals `CONTENT_LENGTH`?
-                SystemRegisterCommandContent::WriteProc {
-                        timestamp,
-                        write_rank,
-                        data_to_write,
-                    } => system_content(timestamp, write_rank, data_to_write),
-
-                SystemRegisterCommandContent::Ack => vec![],
-            };
-
-            let message = [
-                &MAGIC_NUMBER[..],
-                &padding[..],
-                &[cmd.header.process_identifier][..],
-                &[msg_type][..],
-
-                // According to documentation Uuid::as_bytes() returns &[u8; 16]
-                &cmd.header.msg_ident.as_bytes()[..],
-                &cmd.header.read_ident.to_be_bytes()[..],
-                &cmd.header.sector_idx.to_be_bytes()[..],
-
-                &content[..],
-            ].concat();
-            
-
-            let hmac_tag = calculate_hmac_tag(&message, hmac_key);
-
-            let msg = [&message[..], &hmac_tag[..]].concat();
-            writer.write_all(&msg).await?;
-        }
+        RegisterCommand::System(cmd)
+            => serialize_system_command(cmd, writer, hmac_key).await?,
     }
 
     Ok(())
 }
 
+
+
+pub async fn serialize_client_command(
+    cmd: &ClientRegisterCommand,
+    writer: &mut (dyn AsyncWrite + Send + Unpin),
+    hmac_key: &[u8],
+) -> Result<(), Error> {
+
+    
+    let padding = [0; CLIENT_REQUEST_PADDING_LENGTH];
+    let msg_type = match cmd.content {
+        ClientRegisterCommandContent::Read              => READ_TYPE,
+        ClientRegisterCommandContent::Write { data: _ } => WRITE_TYPE,
+    };
+
+    let empty_vec = vec![];
+    let content = match &cmd.content {
+        ClientRegisterCommandContent::Read              => &empty_vec,
+
+        // TODO: check if legth of `content.length` equals `CONTENT_LENGTH`?
+        ClientRegisterCommandContent::Write { data }    => &data.0,
+    };
+
+    let message = [
+        &MAGIC_NUMBER[..],
+        &padding[..],
+        &[msg_type][..],
+
+        &cmd.header.request_identifier.to_be_bytes()[..],
+        &cmd.header.sector_idx.to_be_bytes()[..],
+
+        &content[..],
+    ].concat();
+
+    let hmac_tag = calculate_hmac_tag(&message, hmac_key);
+
+    let msg = [&message[..], &hmac_tag[..]].concat();
+    writer.write_all(&msg).await
+}
+
+pub async fn serialize_system_command(
+    cmd: &SystemRegisterCommand,
+    writer: &mut (dyn AsyncWrite + Send + Unpin),
+    hmac_key: &[u8],
+) -> Result<(), Error> {
+
+    
+    let padding = [0; SYSTEM_PADDING_LENGTH];
+    let msg_type = match &cmd.content {
+        SystemRegisterCommandContent::ReadProc => READ_PROC_TYPE,
+        SystemRegisterCommandContent::Value {
+                timestamp: _,
+                write_rank: _,
+                sector_data: _,
+            } => VALUE_TYPE,
+
+        SystemRegisterCommandContent::WriteProc {
+                timestamp: _,
+                write_rank: _,
+                data_to_write: _,
+            } => WRITE_PROC_TYPE,
+
+        SystemRegisterCommandContent::Ack => ACK_TYPE,
+    };
+
+    let content = match &cmd.content {
+        SystemRegisterCommandContent::ReadProc => vec![],
+
+        // TODO: check if legth of `sectr_data` equals `CONTENT_LENGTH`?
+        SystemRegisterCommandContent::Value {
+                timestamp,
+                write_rank,
+                sector_data,
+            } => system_content(timestamp, write_rank, sector_data),
+
+        // TODO: check if legth of `data_to_write` equals `CONTENT_LENGTH`?
+        SystemRegisterCommandContent::WriteProc {
+                timestamp,
+                write_rank,
+                data_to_write,
+            } => system_content(timestamp, write_rank, data_to_write),
+
+        SystemRegisterCommandContent::Ack => vec![],
+    };
+
+    let message = [
+        &MAGIC_NUMBER[..],
+        &padding[..],
+        &[cmd.header.process_identifier][..],
+        &[msg_type][..],
+
+        // According to documentation Uuid::as_bytes() returns &[u8; 16]
+        &cmd.header.msg_ident.as_bytes()[..],
+        &cmd.header.read_ident.to_be_bytes()[..],
+        &cmd.header.sector_idx.to_be_bytes()[..],
+
+        &content[..],
+    ].concat();
+    
+
+    let hmac_tag = calculate_hmac_tag(&message, hmac_key);
+
+    let msg = [&message[..], &hmac_tag[..]].concat();
+    writer.write_all(&msg).await
+
+}
 
 fn system_content(timestamp: &u64, write_rank: &u8, sector_data: &SectorVec) -> Vec<u8> {
                         
