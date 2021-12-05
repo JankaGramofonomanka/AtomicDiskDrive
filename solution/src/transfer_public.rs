@@ -15,7 +15,7 @@ use crate::constants::*;
 
 #[allow(non_snake_case)]
 fn INVALID(msg_type: u8) -> bool {
-    msg_type > MAX_TYPE || MIN_TYPE > msg_type
+    msg_type > MAX_CMD_TYPE || MIN_CMD_TYPE > msg_type
 }
 
 #[allow(non_snake_case)]
@@ -368,4 +368,47 @@ fn system_content(timestamp: &u64, write_rank: &u8, sector_data: &SectorVec) -> 
         &sector_data.0[..]
 
     ].concat()
+}
+
+async fn serialize_response(
+    response: &OperationComplete,
+    writer: &mut (dyn AsyncWrite + Send + Unpin),
+    hmac_key: &[u8],
+) -> Result<(), Error> {
+    
+    let padding = [0; RESPONSE_PADDING_LENGTH];
+    let msg_type = match response.op_return {
+        OperationReturn::Read(_)    => READ_RETURN_TYPE,
+        OperationReturn::Write      => WRITE_RETURN_TYPE,
+    };
+
+    let empty_vec = vec![];
+    let content = match &response.op_return {
+
+        // TODO: check if legth of `sectr_data` equals `CONTENT_LENGTH`?
+        OperationReturn::Read(read_ret) => match &read_ret.read_data {
+            Some(data)  => &data.0,
+
+            // TODO: is this ok?
+            None        => &empty_vec,
+        },
+
+        OperationReturn::Write      => &empty_vec,
+
+    };
+
+    let message = [
+        &MAGIC_NUMBER[..],
+        &padding[..],
+        &[response.status_code as u8][..],
+        &[msg_type][..],
+        &response.request_identifier.to_be_bytes(),
+
+        &content[..],
+    ].concat();
+
+    let hmac_tag = calculate_hmac_tag(&message, hmac_key);
+
+    let msg = [&message[..], &hmac_tag[..]].concat();
+    writer.write_all(&msg).await
 }
