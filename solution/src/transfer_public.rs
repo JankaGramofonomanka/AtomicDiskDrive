@@ -66,7 +66,10 @@ pub async fn deserialize_register_command(
     loop {
         let mut magic_num: [u8; 4] = [0; 4];
 
+        data.read_exact(&mut magic_num).await?;
         while magic_num != MAGIC_NUMBER {
+            
+            for i in 0..3 { magic_num[i] = magic_num[i + 1]; }
             data.read_exact(&mut magic_num[3..4]).await?;
         }
 
