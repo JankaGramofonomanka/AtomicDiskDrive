@@ -24,7 +24,7 @@ pub trait SectorsManager: Send + Sync {
 
 /// Path parameter points to a directory to which this method has exclusive access.
 pub fn build_sectors_manager(path: PathBuf) -> Arc<dyn SectorsManager> {
-    unimplemented!()
+    Arc::new(SMModule::new(path))
 }
 
 
@@ -36,7 +36,7 @@ struct SMModule {
 }
 
 impl SMModule {
-    async fn new(path: PathBuf) -> Self {
+    fn new(path: PathBuf) -> Self {
         SMModule {
             storage: AtomicStorage::new(path),
             //metadata: HashMap::new(),
