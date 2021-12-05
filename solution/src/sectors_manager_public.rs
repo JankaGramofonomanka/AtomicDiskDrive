@@ -119,7 +119,7 @@ impl SectorsManager for SMModule {
     }
 
     async fn read_metadata(&self, idx: SectorIdx) -> (u64, u8) {
-        self.read_metadata(idx).await
+        self.read_sector_metadata(idx).await
     }
 
     async fn write(&self, idx: SectorIdx, sector: &(SectorVec, u64, u8)) {
