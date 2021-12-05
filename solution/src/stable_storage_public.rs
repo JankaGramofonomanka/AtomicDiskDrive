@@ -27,7 +27,6 @@ type Nat = u64;
 
 
 const KEYSFILE: &str = "keys";
-const TMPFILE: &str = "tmpfile";
 
 #[allow(non_snake_case)]
 fn MK_FILENAME(num: Nat) -> String {
