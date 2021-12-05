@@ -270,8 +270,8 @@ pub async fn serialize_register_command(
 
             let hmac_tag = calculate_hmac_tag(&message, hmac_key);
 
-            writer.write_all(&message).await?;
-            writer.write_all(&hmac_tag).await?;
+            let msg = [&message[..], &hmac_tag[..]].concat();
+            writer.write_all(&msg).await?;
             
         }
 
@@ -331,8 +331,8 @@ pub async fn serialize_register_command(
 
             let hmac_tag = calculate_hmac_tag(&message, hmac_key);
 
-            writer.write_all(&message).await?;
-            writer.write_all(&hmac_tag).await?;
+            let msg = [&message[..], &hmac_tag[..]].concat();
+            writer.write_all(&msg).await?;
         }
     }
 
