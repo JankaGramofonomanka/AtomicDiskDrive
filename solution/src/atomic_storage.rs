@@ -1,9 +1,28 @@
 
 use std::path::{Path, PathBuf};
 use tokio::fs::{File, rename};
-use tokio::io::{AsyncWriteExt, AsyncReadExt, ErrorKind};
+use tokio::io::{AsyncWriteExt, AsyncReadExt};
+use std::ffi::OsStr;
 
-const TMPFILE: &str = "tmpfile";
+
+#[allow(non_snake_case)]
+fn TMP_PATH(filepath: impl AsRef<Path>) -> PathBuf {
+    let filename = match filepath.as_ref().file_name() {
+        Some(name)  => name,
+        None        => OsStr::new(""),
+    };
+    let parent = match filepath.as_ref().parent() {
+        Some(path)  => path,
+        None        => Path::new("/"),
+    };
+    
+    let tmp_filename = format!("{}.tmp", filename.to_str().unwrap());
+
+    let mut tmp_path = PathBuf::new();
+    tmp_path.push(parent);
+    tmp_path.push(tmp_filename);
+    tmp_path
+}
 
 
 pub struct AtomicStorage {
@@ -24,13 +43,15 @@ impl AtomicStorage {
         dir.push(filename);
         dir
     }
+        
 
     // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
     /// Atomically stores `value` in `{self.dir}/{filename}`
     pub async fn store_atomic(&self, filename: impl AsRef<Path>, value: &[u8])
         -> Result<(), String> {
 
-        let tmpfile_path = self.get_path(TMPFILE);
+        let file_path = self.get_path(filename);
+        let tmpfile_path = TMP_PATH(file_path.clone());
 
         {
             let mut tmpfile = File::create(tmpfile_path.clone()).await.unwrap();
@@ -38,10 +59,7 @@ impl AtomicStorage {
             tmpfile.sync_data().await.unwrap();
         }
 
-        let file_path = self.get_path(filename);
-        
         rename(tmpfile_path, file_path).await.unwrap();
-        
         
         let dir = File::open(self.dir.clone()).await.unwrap();
         dir.sync_data().await.unwrap();
