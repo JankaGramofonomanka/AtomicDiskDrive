@@ -379,7 +379,7 @@ async fn serialize_response(
     hmac_key: &[u8],
 ) -> Result<(), Error> {
     
-    let padding = [0; RESPONSE_PADDING_LENGTH];
+    let padding = [0; CLIENT_RESPONSE_PADDING_LENGTH];
     let msg_type = match response.op_return {
         OperationReturn::Read(_)    => READ_RETURN_TYPE,
         OperationReturn::Write      => WRITE_RETURN_TYPE,
