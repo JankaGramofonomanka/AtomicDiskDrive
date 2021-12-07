@@ -33,26 +33,26 @@ pub struct Send {
 
 
 
-struct RCModule {
-    tcp_connections: HashMap<usize, (String, u16)>,
+pub struct RCModule {
+    tcp_locations: HashMap<usize, (String, u16)>,
     hmac_key: [u8; 64],
 }
 
 impl RCModule {
-    fn new(tcp_connections: Vec<(String, u16)>, hmac_key: [u8; 64]) -> Self {
+    pub fn new(tcp_locations: Vec<(String, u16)>, hmac_key: [u8; 64]) -> Self {
         
-        let mut tcp_conns = HashMap::new();
+        let mut tcp_locs = HashMap::new();
 
         let mut proc_id: usize = 1;
-        for (host, port) in tcp_connections {
+        for (host, port) in tcp_locations {
 
-            tcp_conns.insert(proc_id, (host, port));
+            tcp_locs.insert(proc_id, (host, port));
 
             proc_id += 1;
         }
 
         RCModule {
-            tcp_connections: tcp_conns,
+            tcp_locations: tcp_locs,
             hmac_key: hmac_key,
         }
     }
@@ -82,7 +82,7 @@ impl RegisterClient for RCModule {
     /// Sends a system message to a single process.
     async fn send(&self, msg: Send) {
         
-        let (host, port) = &self.tcp_connections[&msg.target];
+        let (host, port) = &self.tcp_locations[&msg.target];
         send_msg(msg.cmd, host.clone(), *port, self.hmac_key).await
 
     }
@@ -91,7 +91,7 @@ impl RegisterClient for RCModule {
     async fn broadcast(&self, msg: Broadcast) {
 
         let mut send_handles: Vec<JoinHandle<()>> = vec![];
-        for (_, (host, port)) in self.tcp_connections.iter() {
+        for (_, (host, port)) in self.tcp_locations.iter() {
             
             let handle = tokio::spawn(send_msg(
                 msg.cmd.clone(),

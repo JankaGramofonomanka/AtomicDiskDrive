@@ -35,7 +35,7 @@ fn MK_FILENAME(num: Nat) -> String {
 
 
 
-struct Storage {
+pub struct Storage {
     storage: AtomicStorage,
     map: HashMap<String, Nat>,
     next_file_num: Nat,
@@ -43,7 +43,7 @@ struct Storage {
 
 impl Storage {
 
-    async fn new(dir: PathBuf) -> Self {
+    pub async fn new(dir: PathBuf) -> Self {
         
         let mut res = Storage {
             storage: AtomicStorage::new(dir),

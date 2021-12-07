@@ -373,7 +373,7 @@ fn system_content(timestamp: &u64, write_rank: &u8, sector_data: &SectorVec) -> 
     ].concat()
 }
 
-async fn serialize_response(
+pub async fn serialize_response(
     response: &OperationComplete,
     writer: &mut (dyn AsyncWrite + Send + Unpin),
     hmac_key: &[u8],
