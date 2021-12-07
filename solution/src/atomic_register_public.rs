@@ -86,7 +86,7 @@ enum ARState {
     Idle,
 }
 
-struct ARModule {
+pub struct ARModule {
     metadata:           Box<dyn StableStorage>,
     register_client:    Arc<dyn RegisterClient>,
     sectors_manager:    Arc<dyn SectorsManager>,
@@ -248,6 +248,8 @@ impl ARModule {
         sector_data:    SectorVec,
     ) {
         if self.write_phase { return; }
+
+        // TODO: also check sector_idx?
         if cmd_header.read_ident != self.read_id { return; }
 
         self.readlist.push((timestamp, write_rank, sector_data));
@@ -324,6 +326,7 @@ impl ARModule {
         &mut self,
         cmd_header: SystemCommandHeader,
     ) {
+        // TODO: also check sector_idx?
         if cmd_header.read_ident != self.read_id { return; }
 
         self.acks += 1;
