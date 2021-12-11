@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use std::cmp::{Eq, Ord, PartialOrd, PartialEq, Ordering};
 use uuid::Uuid;
+use tokio::sync::{Mutex, MutexGuard, Notify};
 
 use crate::register_client_public;
 
@@ -108,6 +109,8 @@ pub struct ARModule {
                                 + Sync,
                         >>,
     request_id:         Option<u64>,
+
+    notifier:           Notify,
     
 }
 
@@ -140,6 +143,14 @@ impl ARModule {
         header: SystemCommandHeader,
         content: SystemRegisterCommandContent,
     ) {
+
+        println!(
+            "(proc_id: {}) broadcast `{}` msg", 
+            self.process_id, 
+            cmd_type(&content),
+        );
+
+
         let broadcast_cmd = self.prepare_cmd(header, content);
 
         let msg = register_client_public::Broadcast {
@@ -153,6 +164,14 @@ impl ARModule {
         request_header: SystemCommandHeader, 
         content: SystemRegisterCommandContent, 
     ) {
+
+        println!(
+            "(proc_id: {}) send `{}` msg to {}", 
+            self.process_id, 
+            cmd_type(&content),
+            request_header.process_identifier
+        );
+
         let response_cmd = self.prepare_cmd(request_header, content);
 
         let msg = register_client_public::Send {
@@ -351,6 +370,10 @@ impl ARModule {
                     self.callback(OperationReturn::Write).await;
                 }
             }
+
+            // notify any pending client operations
+            self.request_id = None;
+            self.notifier.notify_one();
         }
     }
 
@@ -458,6 +481,8 @@ impl ARModule {
         
             callback_op:        None,
             request_id:         None,
+
+            notifier:           Notify::new(),
             
         }
     }
@@ -496,8 +521,13 @@ impl AtomicRegister for ARModule {
                 + Sync,
         >,
     ) {
-        self.callback_op = Some(operation_complete);
+        // wait until the previous client command is handled
+        while is_some(self.request_id) {
+            self.notifier.notified().await;
+        }
+
         self.request_id = Some(cmd.header.request_identifier);
+        self.callback_op = Some(operation_complete);
 
         let cmd_header = cmd.header;
         match cmd.content {
@@ -527,4 +557,24 @@ impl AtomicRegister for ARModule {
     }
 }
 
+fn is_some<T>(x: Option<T>) -> bool {
+    match x {
+        Some(_) => true,
+        None => false,
+    }
+}
 
+
+fn cmd_type(content: &SystemRegisterCommandContent) -> String {
+    match content {
+        SystemRegisterCommandContent::ReadProc
+            => format!("ReadProc"),
+        SystemRegisterCommandContent::Value { timestamp: _, write_rank: _, sector_data: _ }
+            => format!("Value"),
+        SystemRegisterCommandContent::WriteProc { timestamp: _, write_rank: _, data_to_write: _ }
+            => format!("WriteProc"),
+        SystemRegisterCommandContent::Ack
+            => format!("Ack"),
+    }
+
+}
