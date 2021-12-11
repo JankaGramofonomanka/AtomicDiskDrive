@@ -138,8 +138,33 @@ async fn handle_stream<'a>(
                 }
 
                 if !valid {
-                    println!("invalid hmac tag");
-                    unimplemented!();
+                    match cmd {
+                        // TODO: what in case of system commands?
+                        RegisterCommand::System(_) => {},
+                        
+                        RegisterCommand::Client(cmd) => {
+                            let result = invalid_tag_result(cmd);
+                            {
+                                println!("invalid hmac tag");
+                                let mut stream_guard;
+                                { stream_guard = write_stream_ref.lock().await; }
+                                println!(
+                                    "(proc_id: {}, stream_id: {}) stream locked to write (invalid tag)", 
+                                    self_rank, 
+                                    stream_id
+                                );
+                                
+                                let stream = stream_guard.deref_mut();
+                                serialize_response(&result, &mut *stream, &hmac_client_key).await.unwrap();
+                            }
+                            println!(
+                                "(proc_id: {}, stream_id: {}) stream unlocked after write (invalid tag)", 
+                                self_rank, 
+                                stream_id
+                            );
+                        }
+                    }
+                    
                     return;
                 }
         
@@ -172,7 +197,7 @@ async fn handle_stream<'a>(
                         let req_id = cmd.header.request_identifier;
         
                         let hmac_key = hmac_client_key.clone();
-                        let stream_ref_clone = write_stream_ref.clone();
+                        let write_stream_ref_clone = write_stream_ref.clone();
                         let operation_complete: Box<
                             dyn FnOnce(OperationComplete) 
                                     -> Pin<Box<dyn Future<Output = ()> + core::marker::Send>>
@@ -190,9 +215,7 @@ async fn handle_stream<'a>(
 
                                 {
                                     let mut stream_guard;
-                                    {
-                                        stream_guard = stream_ref_clone.lock().await; 
-                                    }
+                                    { stream_guard = write_stream_ref_clone.lock().await; }
                                     println!(
                                         "(proc_id: {}, stream_id: {}) stream locked to write", 
                                         self_rank, 
@@ -355,6 +378,21 @@ fn cmd_type(cmd: &RegisterCommand) -> String {
         }
     }
 
+}
+
+fn invalid_tag_result(cmd: ClientRegisterCommand) -> OperationComplete {
+    OperationComplete {
+        status_code: StatusCode::AuthFailure,
+        request_identifier: cmd.header.request_identifier,
+        op_return: match cmd.content {
+            ClientRegisterCommandContent::Read
+                => OperationReturn::Read(ReadReturn { read_data: None }),
+
+            ClientRegisterCommandContent::Write { data: _ }
+                => OperationReturn::Write,
+            
+        },
+    }
 }
 
 fn cmd_sender(cmd: &RegisterCommand) -> String {
