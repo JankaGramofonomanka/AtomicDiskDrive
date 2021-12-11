@@ -10,6 +10,7 @@ use uuid::Uuid;
 use tokio::sync::{Mutex, Notify};
 use std::ops::DerefMut;
 use crate::domain::*;
+use serde::{Deserialize, Serialize};
 
 use crate::register_client_public;
 
@@ -55,6 +56,10 @@ pub async fn build_atomic_register(
     Box::new(armod)
 }
 
+
+
+const METADATA_FILE: &str = "metadata";
+
 fn highest(readlist: &Vec<SectorData>) -> &SectorData {
 
     let mut max_ts = 0;
@@ -87,6 +92,7 @@ enum ARPhase {
 struct ARInfo {
     processes_count:    u8,
     process_id:         u8,
+    uuid:               Uuid,
 }
 
 struct ARState {
@@ -109,30 +115,9 @@ struct ARState {
 }
 
 pub struct ARModule {
-    metadata:           Box<dyn StableStorage>,
+    metadata:           Arc<Mutex<Box<dyn StableStorage>>>,
     register_client:    Arc<dyn RegisterClient>,
     sectors_manager:    Arc<dyn SectorsManager>,
-
-    /*
-    processes_count:    u8,
-
-    process_id:         u8,
-    read_id:            u64,
-    readlist:           Vec<SectorData>,
-    acks:               u8,
-    phase:              ARPhase,
-    writeval:           Option<SectorVec>,
-    readval:            Option<SectorVec>,
-    write_phase:        bool,
-
-    callback_op:        Option<Box<
-                            dyn FnOnce(OperationComplete)
-                                -> Pin<Box<dyn Future<Output = ()> + Send>>
-                                + Send
-                                + Sync,
-                        >>,
-    request_id:         Option<u64>,
-    */
 
     state:              Arc<Mutex<ARState>>,
     info:               Arc<ARInfo>,
@@ -150,7 +135,6 @@ impl ARModule {
         content:    SystemRegisterCommandContent,
     ) -> SystemRegisterCommand {
         
-        // TODO: leave the uuid the same or create unique?
         let mut prep_header = header.clone();
 
         // TODO: are you sure `self_ident` (param of `build_atomic_register`) 
@@ -158,8 +142,8 @@ impl ARModule {
         prep_header.process_identifier = ar_info.process_id;
 
         let cmd = SystemRegisterCommand {
-            header: prep_header,
-            content: content,
+            header:     prep_header,
+            content:    content,
         };
 
         cmd
@@ -205,7 +189,7 @@ impl ARModule {
         let response_cmd = ARModule::prepare_cmd(ar_info, request_header, content);
 
         let msg = register_client_public::Send {
-            cmd: Arc::new(response_cmd),
+            cmd:    Arc::new(response_cmd),
             target: request_header.process_identifier as usize,
         };
 
@@ -224,14 +208,55 @@ impl ARModule {
     ) {
 
         let op_complete = OperationComplete {
-            status_code: StatusCode::Ok,
+            status_code:        StatusCode::Ok,
             request_identifier: request_id,
-            op_return: op_return,
+            op_return:          op_return,
         };
         
         callback_op(op_complete).await;
     }
 
+
+    async fn store_metadata(
+        uuid:           Uuid,
+        read_id:        u64,
+        sector_idx:     Option<SectorIdx>,
+        storage_ref:    Arc<Mutex<Box<dyn StableStorage>>>,
+    ) { 
+        let data = (uuid, read_id, sector_idx);
+        let serialized: Vec<u8> = bincode::serialize(&data).unwrap();
+        
+        let mut storage_guard = storage_ref.lock().await;
+        let storage = storage_guard.deref_mut();
+        storage.put(METADATA_FILE, &serialized[..]).await.unwrap();
+    }
+
+    async fn restore_metadata(
+        storage_ref: Arc<Mutex<Box<dyn StableStorage>>>,
+    ) -> (Uuid, u64, Option<SectorIdx>) {
+
+        let result;
+        {
+            let mut storage_guard = storage_ref.lock().await;
+            let storage = storage_guard.deref_mut();
+            result = storage.get(METADATA_FILE).await;
+        }
+
+        match result {
+            None => {
+                let uuid = Uuid::new_v4();
+                let read_id = 0;
+                let sector_idx = None;
+                ARModule::store_metadata(uuid, read_id, sector_idx, storage_ref).await;
+                (uuid, read_id, sector_idx)
+            },
+
+            Some(serialized) => {
+                let (uuid, read_id, sector_idx) = bincode::deserialize(&serialized).unwrap();
+                (uuid, read_id, sector_idx)
+            },
+        }
+    }
 
     /*
     upon event < sbeb, Deliver | p [READ_PROC, r] > do
@@ -241,15 +266,16 @@ impl ARModule {
         ar_info:            Arc<ARInfo>,
         sectors_manager:    Arc<dyn SectorsManager>,
         register_client:    Arc<dyn RegisterClient>,
+
         cmd_header:         SystemCommandHeader,
     ) {
         let (ts, wr) = sectors_manager.read_metadata(cmd_header.sector_idx).await;
         let val = sectors_manager.read_data(cmd_header.sector_idx).await;
 
         let content = SystemRegisterCommandContent::Value {
-            timestamp: ts,
-            write_rank: wr,
-            sector_data: val,
+            timestamp:      ts,
+            write_rank:     wr,
+            sector_data:    val,
         };
 
         ARModule::respond(ar_info, register_client, cmd_header, content).await
@@ -266,10 +292,11 @@ impl ARModule {
         ar_info:            Arc<ARInfo>,
         sectors_manager:    Arc<dyn SectorsManager>,
         register_client:    Arc<dyn RegisterClient>,
-        cmd_header:     SystemCommandHeader,
-        timestamp:      u64,
-        write_rank:     u8,
-        data_to_write:  SectorVec,
+
+        cmd_header:         SystemCommandHeader,
+        timestamp:          u64,
+        write_rank:         u8,
+        data_to_write:      SectorVec,
     ) {
         let (ts, wr) = sectors_manager.read_metadata(cmd_header.sector_idx).await;
         if timestamp > ts || (timestamp == ts && write_rank > wr) {
@@ -308,6 +335,7 @@ impl ARModule {
         ar_state_ref:       Arc<Mutex<ARState>>, 
         sectors_manager:    Arc<dyn SectorsManager>,
         register_client:    Arc<dyn RegisterClient>,
+
         cmd_header:         SystemCommandHeader,
         timestamp:          u64,
         write_rank:         u8,
@@ -320,6 +348,7 @@ impl ARModule {
 
         if cmd_header.read_ident != ar_state.read_id { return; }
         if Some(cmd_header.sector_idx) != ar_state.sector_idx { return; }
+        if ar_info.uuid != cmd_header.msg_ident { return; }
 
         ar_state.readlist.push((timestamp, write_rank, sector_data));
 
@@ -366,8 +395,6 @@ impl ARModule {
 
                     let content = SystemRegisterCommandContent::WriteProc {
                         timestamp:      *maxts + 1,
-
-                        // TODO: Are you sure `self.process_id` is the same as "rank(self)"?
                         write_rank:     ar_info.process_id, 
                         data_to_write:  writeval,
                     };
@@ -394,9 +421,8 @@ impl ARModule {
     async fn ack(
         ar_info:            Arc<ARInfo>,
         ar_state_ref:       Arc<Mutex<ARState>>, 
-        sectors_manager:    Arc<dyn SectorsManager>,
-        register_client:    Arc<dyn RegisterClient>,
         notifier:           Arc<Notify>,
+
         cmd_header:         SystemCommandHeader,
     ) {
 
@@ -405,6 +431,7 @@ impl ARModule {
 
         if cmd_header.read_ident != ar_state.read_id { return; }
         if Some(cmd_header.sector_idx) != ar_state.sector_idx { return; }
+        if ar_info.uuid != cmd_header.msg_ident { return; }
 
         ar_state.acks += 1;
         if ar_state.phase != ARPhase::Idle && ar_state.acks > ar_info.processes_count / 2 {
@@ -441,6 +468,7 @@ impl ARModule {
 
             // notify any pending client operations
             ar_state.request_id = None;
+            ar_state.sector_idx = None;
             notifier.notify_one();
         }
     }
@@ -458,7 +486,9 @@ impl ARModule {
         ar_info:            Arc<ARInfo>,
         ar_state_ref:       Arc<Mutex<ARState>>, 
         register_client:    Arc<dyn RegisterClient>,
-        cmd_header: ClientCommandHeader,
+        metadata:           Arc<Mutex<Box<dyn StableStorage>>>,
+
+        cmd_header:         ClientCommandHeader,
     ) {
         let mut ar_state_guard = ar_state_ref.lock().await;
         let ar_state = ar_state_guard.deref_mut();
@@ -468,11 +498,16 @@ impl ARModule {
         ar_state.acks = 0;
         ar_state.phase = ARPhase::Reading;
 
+        ARModule::store_metadata(
+            ar_info.uuid, 
+            ar_state.read_id, 
+            ar_state.sector_idx, 
+            metadata,
+        ).await;
+
         let broadcast_header = SystemCommandHeader {
             process_identifier: ar_info.process_id,
-
-            // TODO: what to do with this?
-            msg_ident: Uuid::nil(),
+            msg_ident:  ar_info.uuid,
             read_ident: ar_state.read_id,
             sector_idx: cmd_header.sector_idx
 
@@ -495,8 +530,9 @@ impl ARModule {
     async fn write(
         ar_info:            Arc<ARInfo>,
         ar_state_ref:       Arc<Mutex<ARState>>, 
-        sectors_manager:    Arc<dyn SectorsManager>,
         register_client:    Arc<dyn RegisterClient>,
+        metadata:           Arc<Mutex<Box<dyn StableStorage>>>,
+
         cmd_header:         ClientCommandHeader,
         data:               SectorVec,
     ) {
@@ -508,12 +544,17 @@ impl ARModule {
         ar_state.acks = 0;
         ar_state.readlist = vec![];
         ar_state.phase = ARPhase::Writing;
+
+        ARModule::store_metadata(
+            ar_info.uuid, 
+            ar_state.read_id, 
+            ar_state.sector_idx, 
+            metadata,
+        ).await;
         
         let broadcast_header = SystemCommandHeader {
             process_identifier: ar_info.process_id,
-
-            // TODO: what to do with this?
-            msg_ident: Uuid::nil(),
+            msg_ident:  ar_info.uuid,
             read_ident: ar_state.read_id,
             sector_idx: cmd_header.sector_idx
 
@@ -521,6 +562,7 @@ impl ARModule {
         let content = SystemRegisterCommandContent::ReadProc;
         ARModule::broadcast(ar_info, register_client, broadcast_header, content).await;
     }
+
 
     /* 
     upon event < nnar, Init > do
@@ -534,6 +576,16 @@ impl ARModule {
         readval := _;
         write_phase := FALSE;
         store(wr, ts, val, rid);
+
+    upon event < nnar, Recovery > do
+        retrieve(wr, ts, val, rid);
+        readlist := [ _ ] `of length` N;
+        acklist := [ _ ]  `of length` N;
+        reading := FALSE;
+        readval := _;
+        write_phase := FALSE;
+        writing := FALSE;
+        writeval := _;
     */
     async fn new(
         self_ident: u8,
@@ -543,22 +595,26 @@ impl ARModule {
         processes_count: usize,
 
     ) -> Self {
+        let metadata = Arc::new(Mutex::new(metadata));
+        let (uuid, read_id, sector_idx) = ARModule::restore_metadata(metadata.clone()).await;
+
         ARModule {
             metadata:           metadata,
             register_client:    register_client,
             sectors_manager:    sectors_manager,
-            
+
             info: Arc::new(
                 ARInfo {
                     processes_count:    processes_count as u8,
                     process_id:         self_ident,
+                    uuid:               uuid,
                 }
             ),
         
             state: Arc::new(Mutex::new(
                 ARState {
-                    read_id:        0,
-                    sector_idx:     None,
+                    read_id:        read_id,
+                    sector_idx:     sector_idx,
                     readlist:       vec![],
                     acks:           0,
                     phase:          ARPhase::Idle,
@@ -577,25 +633,13 @@ impl ARModule {
         }
     }
 
-    // TODO: for now there is nothing to recover but probably there will be
-    /*
-    upon event < nnar, Recovery > do
-        retrieve(wr, ts, val, rid);
-        readlist := [ _ ] `of length` N;
-        acklist := [ _ ]  `of length` N;
-        reading := FALSE;
-        readval := _;
-        write_phase := FALSE;
-        writing := FALSE;
-        writeval := _;
-    */
-
     
     async fn handle_client(
         ar_info:            Arc<ARInfo>,
         ar_state_ref:       Arc<Mutex<ARState>>, 
         sectors_manager:    Arc<dyn SectorsManager>,
         register_client:    Arc<dyn RegisterClient>,
+        metadata:           Arc<Mutex<Box<dyn StableStorage>>>,
         notifier:           Arc<Notify>,
         
         cmd:                ClientRegisterCommand,
@@ -620,6 +664,7 @@ impl ARModule {
             let ar_state = ar_state_guard.deref_mut();
 
             ar_state.request_id = Some(cmd.header.request_identifier);
+            ar_state.sector_idx = Some(cmd.header.sector_idx);
             ar_state.callback_op = Some(operation_complete);
         }
 
@@ -630,16 +675,18 @@ impl ARModule {
                     ar_info, 
                     ar_state_ref, 
                     register_client, 
-                    cmd_header
+                    metadata,
+                    cmd_header,
                 ).await,
 
             ClientRegisterCommandContent::Write { data }
                 => ARModule::write(
                     ar_info, 
                     ar_state_ref, 
-                    sectors_manager, 
                     register_client, 
-                    cmd_header, data
+                    metadata,
+                    cmd_header, 
+                    data,
                 ).await,
         }
     }
@@ -690,8 +737,6 @@ impl ARModule {
                 => ARModule::ack(        
                     ar_info,
                     ar_state_ref, 
-                    sectors_manager,
-                    register_client,
                     notifier,
                     cmd_header,
                 ).await,
@@ -723,6 +768,7 @@ impl AtomicRegister for ARModule {
             self.state.clone(), 
             self.sectors_manager.clone(), 
             self.register_client.clone(), 
+            self.metadata.clone(), 
             self.notifier.clone(), 
             cmd, 
             operation_complete,
