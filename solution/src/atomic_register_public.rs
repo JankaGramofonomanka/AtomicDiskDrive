@@ -1,19 +1,15 @@
 
-use crate::{
-    ClientRegisterCommand, OperationComplete, RegisterClient, SectorsManager, StableStorage,
-    SystemRegisterCommand, 
-    SectorVec, SystemCommandHeader, SystemRegisterCommandContent,
-    ClientCommandHeader, StatusCode, OperationReturn, ReadReturn,
-    ClientRegisterCommandContent
-};
+use crate::{RegisterClient, SectorsManager, StableStorage};
+
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use std::cmp::{Eq, Ord, PartialOrd, PartialEq, Ordering};
+use std::cmp::{Eq, PartialEq};
 use uuid::Uuid;
 use tokio::sync::{Mutex, Notify};
 use std::ops::DerefMut;
+use crate::domain::*;
 
 use crate::register_client_public;
 
@@ -96,6 +92,7 @@ struct ARInfo {
 struct ARState {
     
     read_id:            u64,
+    sector_idx:         Option<SectorIdx>,
     readlist:           Vec<SectorData>,
     acks:               u8,
     phase:              ARPhase,
@@ -321,8 +318,8 @@ impl ARModule {
 
         if ar_state.write_phase { return; }
 
-        // TODO: also check sector_idx?
         if cmd_header.read_ident != ar_state.read_id { return; }
+        if Some(cmd_header.sector_idx) != ar_state.sector_idx { return; }
 
         ar_state.readlist.push((timestamp, write_rank, sector_data));
 
@@ -406,8 +403,8 @@ impl ARModule {
         let mut ar_state_guard = ar_state_ref.lock().await;
         let ar_state = ar_state_guard.deref_mut();
 
-        // TODO: also check sector_idx?
         if cmd_header.read_ident != ar_state.read_id { return; }
+        if Some(cmd_header.sector_idx) != ar_state.sector_idx { return; }
 
         ar_state.acks += 1;
         if ar_state.phase != ARPhase::Idle && ar_state.acks > ar_info.processes_count / 2 {
@@ -561,6 +558,7 @@ impl ARModule {
             state: Arc::new(Mutex::new(
                 ARState {
                     read_id:        0,
+                    sector_idx:     None,
                     readlist:       vec![],
                     acks:           0,
                     phase:          ARPhase::Idle,
