@@ -58,6 +58,7 @@ pub async fn run_register_process(config: Configuration) {
                 config.hmac_system_key,
                 config.hmac_client_key,
                 iter,
+                config.public.max_sector,
             )
         );
         
@@ -76,6 +77,7 @@ async fn handle_stream<'a>(
     hmac_system_key: [u8; 64],
     hmac_client_key: [u8; 32],
     stream_id: u32,
+    max_sector: u64,
 ) {
     loop {
         
@@ -137,13 +139,14 @@ async fn handle_stream<'a>(
                         ),
                 }
 
+                // invalid tag ------------------------------------------------
                 if !valid {
-                    match cmd {
+                    match &cmd {
                         // TODO: what in case of system commands?
                         RegisterCommand::System(_) => {},
-                        
+
                         RegisterCommand::Client(cmd) => {
-                            let result = invalid_tag_result(cmd);
+                            let result = invalid_result(cmd, StatusCode::AuthFailure);
                             {
                                 println!("invalid hmac tag");
                                 let mut stream_guard;
@@ -168,7 +171,41 @@ async fn handle_stream<'a>(
                     return;
                 }
         
+                // invalid sector id ------------------------------------------
+                let sector_idx = get_sector_idx(&cmd);
+                if sector_idx > max_sector {
+                    match &cmd {
+                        // TODO: what in case of system commands?
+                        RegisterCommand::System(_) => {},
+
+                        RegisterCommand::Client(cmd) => {
+                            let result = invalid_result(cmd, StatusCode::InvalidSectorIndex);
+                            {
+                                println!("invalid hmac tag");
+                                let mut stream_guard;
+                                { stream_guard = write_stream_ref.lock().await; }
+                                println!(
+                                    "(proc_id: {}, stream_id: {}) stream locked to write (invalid sector id)", 
+                                    self_rank, 
+                                    stream_id
+                                );
+                                
+                                let stream = stream_guard.deref_mut();
+                                serialize_response(&result, &mut *stream, &hmac_client_key).await.unwrap();
+                            }
+                            println!(
+                                "(proc_id: {}, stream_id: {}) stream unlocked after write (invalid sector id)", 
+                                self_rank, 
+                                stream_id
+                            );
+                        }
+                    }
+                    
+                    return;
+                }
         
+
+                // handling ---------------------------------------------------
                 match cmd {
                     RegisterCommand::System(cmd) => {
                         
@@ -380,9 +417,9 @@ fn cmd_type(cmd: &RegisterCommand) -> String {
 
 }
 
-fn invalid_tag_result(cmd: ClientRegisterCommand) -> OperationComplete {
+fn invalid_result(cmd: &ClientRegisterCommand, status: StatusCode) -> OperationComplete {
     OperationComplete {
-        status_code: StatusCode::AuthFailure,
+        status_code: status,
         request_identifier: cmd.header.request_identifier,
         op_return: match cmd.content {
             ClientRegisterCommandContent::Read
@@ -392,6 +429,14 @@ fn invalid_tag_result(cmd: ClientRegisterCommand) -> OperationComplete {
                 => OperationReturn::Write,
             
         },
+    }
+}
+
+
+fn get_sector_idx(cmd: &RegisterCommand) -> SectorIdx {
+    match cmd {
+        RegisterCommand::System(cmd) => cmd.header.sector_idx,
+        RegisterCommand::Client(cmd) => cmd.header.sector_idx,
     }
 }
 
