@@ -4,3 +4,4 @@ test-utils/target/
 public-tests/Cargo.lock
 solution/Cargo.lock
 test-utils/Cargo.lock
+.toignore/
