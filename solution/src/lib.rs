@@ -81,7 +81,8 @@ async fn handle_stream<'a>(
 ) {
     loop {
         
-        let res;
+        let cmd;
+        let valid;
 
         {
             let mut stream_guard;
@@ -93,11 +94,36 @@ async fn handle_stream<'a>(
             );
 
             let stream = stream_guard.deref_mut();
-            res = deserialize_register_command(
+            let res = deserialize_register_command(
                 &mut *stream,
                 &hmac_system_key,
                 &hmac_client_key,
             ).await;
+
+            match res {
+
+                Ok((c, v)) => {
+                    cmd = c;
+                    valid = v;
+                }
+                
+                Err(e) => {
+                    if e.kind() == ErrorKind::UnexpectedEof {
+                        println!(
+                            "(proc_id: {}, stream_id: {}) connection closed", 
+                            self_rank, 
+                            stream_id,
+                        );
+                        break; 
+                    }
+                    println!(
+                        "(proc_id: {}, stream_id: {}) ERROR: {}", 
+                        self_rank, 
+                        stream_id, e
+                    );
+                    continue;
+                },
+            }
         }
 
         println!(
@@ -106,224 +132,205 @@ async fn handle_stream<'a>(
             stream_id
         );
 
-        match res {
-
-            Ok((cmd, valid)) => {
+        
                 
-                let cmd_type = cmd_type(&cmd);
-                let cmd_sender = cmd_sender(&cmd);
+        let cmd_type = cmd_type(&cmd);
+        let cmd_sender = cmd_sender(&cmd);
 
+        println!(
+            "(proc_id: {}, stream_id: {}) processing command `{}` from {}", 
+            self_rank, 
+            stream_id,
+            cmd_type,
+            cmd_sender,
+        );
+
+        match &cmd {
+            RegisterCommand::Client(cmd)
+                => println!(
+                    "(proc_id: {}, stream_id: {}) request id: {}", 
+                    self_rank, 
+                    stream_id,
+                    cmd.header.request_identifier
+                ),
+            
+            RegisterCommand::System(cmd)
+                => println!(
+                    "(proc_id: {}, stream_id: {}) msg id: {}", 
+                    self_rank, 
+                    stream_id,
+                    cmd.header.msg_ident
+                ),
+        }
+
+        // invalid tag --------------------------------------------------------
+        if !valid {
+            match &cmd {
+                // TODO: what in case of system commands?
+                RegisterCommand::System(_) => {},
+
+                RegisterCommand::Client(cmd) => {
+                    let result = invalid_result(cmd, StatusCode::AuthFailure);
+                    {
+                        println!("invalid hmac tag");
+                        let mut stream_guard;
+                        { stream_guard = write_stream_ref.lock().await; }
+                        println!(
+                            "(proc_id: {}, stream_id: {}) stream locked to write (invalid tag)", 
+                            self_rank, 
+                            stream_id
+                        );
+                        
+                        let stream = stream_guard.deref_mut();
+                        serialize_response(&result, &mut *stream, &hmac_client_key).await.unwrap();
+                    }
+                    println!(
+                        "(proc_id: {}, stream_id: {}) stream unlocked after write (invalid tag)", 
+                        self_rank, 
+                        stream_id
+                    );
+                }
+            }
+            
+            return;
+        }
+
+        // invalid sector id --------------------------------------------------
+        let sector_idx = get_sector_idx(&cmd);
+        if sector_idx > max_sector {
+            match &cmd {
+                // TODO: what in case of system commands?
+                RegisterCommand::System(_) => {},
+
+                RegisterCommand::Client(cmd) => {
+                    let result = invalid_result(cmd, StatusCode::InvalidSectorIndex);
+                    {
+                        println!("invalid hmac tag");
+                        let mut stream_guard;
+                        { stream_guard = write_stream_ref.lock().await; }
+                        println!(
+                            "(proc_id: {}, stream_id: {}) stream locked to write (invalid sector id)", 
+                            self_rank, 
+                            stream_id
+                        );
+                        
+                        let stream = stream_guard.deref_mut();
+                        serialize_response(&result, &mut *stream, &hmac_client_key).await.unwrap();
+                    }
+                    println!(
+                        "(proc_id: {}, stream_id: {}) stream unlocked after write (invalid sector id)", 
+                        self_rank, 
+                        stream_id
+                    );
+                }
+            }
+            
+            return;
+        }
+
+
+        // handling -----------------------------------------------------------
+        match cmd {
+            RegisterCommand::System(cmd) => {
+                
+                {
+                    let mut ar;
+                    { ar = atomic_register.lock().await; }
+                    println!(
+                        "(proc_id: {}, stream_id: {}) ar locked to handle `{}` from {}", 
+                        self_rank, 
+                        stream_id,
+                        cmd_type,
+                        cmd_sender,
+                    );
+                    ar.system_command(cmd).await;
+                }
                 println!(
-                    "(proc_id: {}, stream_id: {}) processing command `{}` from {}", 
+                    "(proc_id: {}, stream_id: {}) ar unlocked after handle `{}` from {}", 
                     self_rank, 
                     stream_id,
                     cmd_type,
                     cmd_sender,
                 );
+            },
+            
+            RegisterCommand::Client(cmd) => {
+                let req_id = cmd.header.request_identifier;
 
-                match &cmd {
-                    RegisterCommand::Client(cmd)
-                        => println!(
-                            "(proc_id: {}, stream_id: {}) request id: {}", 
-                            self_rank, 
-                            stream_id,
-                            cmd.header.request_identifier
-                        ),
-                    
-                    RegisterCommand::System(cmd)
-                        => println!(
-                            "(proc_id: {}, stream_id: {}) msg id: {}", 
-                            self_rank, 
-                            stream_id,
-                            cmd.header.msg_ident
-                        ),
-                }
-
-                // invalid tag ------------------------------------------------
-                if !valid {
-                    match &cmd {
-                        // TODO: what in case of system commands?
-                        RegisterCommand::System(_) => {},
-
-                        RegisterCommand::Client(cmd) => {
-                            let result = invalid_result(cmd, StatusCode::AuthFailure);
-                            {
-                                println!("invalid hmac tag");
-                                let mut stream_guard;
-                                { stream_guard = write_stream_ref.lock().await; }
-                                println!(
-                                    "(proc_id: {}, stream_id: {}) stream locked to write (invalid tag)", 
-                                    self_rank, 
-                                    stream_id
-                                );
-                                
-                                let stream = stream_guard.deref_mut();
-                                serialize_response(&result, &mut *stream, &hmac_client_key).await.unwrap();
-                            }
-                            println!(
-                                "(proc_id: {}, stream_id: {}) stream unlocked after write (invalid tag)", 
-                                self_rank, 
-                                stream_id
-                            );
-                        }
-                    }
-                    
-                    return;
-                }
-        
-                // invalid sector id ------------------------------------------
-                let sector_idx = get_sector_idx(&cmd);
-                if sector_idx > max_sector {
-                    match &cmd {
-                        // TODO: what in case of system commands?
-                        RegisterCommand::System(_) => {},
-
-                        RegisterCommand::Client(cmd) => {
-                            let result = invalid_result(cmd, StatusCode::InvalidSectorIndex);
-                            {
-                                println!("invalid hmac tag");
-                                let mut stream_guard;
-                                { stream_guard = write_stream_ref.lock().await; }
-                                println!(
-                                    "(proc_id: {}, stream_id: {}) stream locked to write (invalid sector id)", 
-                                    self_rank, 
-                                    stream_id
-                                );
-                                
-                                let stream = stream_guard.deref_mut();
-                                serialize_response(&result, &mut *stream, &hmac_client_key).await.unwrap();
-                            }
-                            println!(
-                                "(proc_id: {}, stream_id: {}) stream unlocked after write (invalid sector id)", 
-                                self_rank, 
-                                stream_id
-                            );
-                        }
-                    }
-                    
-                    return;
-                }
-        
-
-                // handling ---------------------------------------------------
-                match cmd {
-                    RegisterCommand::System(cmd) => {
+                let hmac_key = hmac_client_key.clone();
+                let write_stream_ref_clone = write_stream_ref.clone();
+                let operation_complete: Box<
+                    dyn FnOnce(OperationComplete) 
+                            -> Pin<Box<dyn Future<Output = ()> + core::marker::Send>>
+                        + core::marker::Send
+                        + core::marker::Sync,
+                > = Box::new(move |result| {
+                    Box::pin(async move {
                         
-                        {
-                            let mut ar;
-                            { ar = atomic_register.lock().await; }
-                            println!(
-                                "(proc_id: {}, stream_id: {}) ar locked to handle `{}` from {}", 
-                                self_rank, 
-                                stream_id,
-                                cmd_type,
-                                cmd_sender,
-                            );
-                            ar.system_command(cmd).await;
-                        }
                         println!(
-                            "(proc_id: {}, stream_id: {}) ar unlocked after handle `{}` from {}", 
+                            "(proc_id: {}, stream_id: {}) responding to request {}", 
+                            self_rank,
+                            stream_id,
+                            req_id, 
+                        );
+
+                        {
+                            let mut stream_guard;
+                            { stream_guard = write_stream_ref_clone.lock().await; }
+                            println!(
+                                "(proc_id: {}, stream_id: {}) stream locked to write", 
+                                self_rank, 
+                                stream_id
+                            );
+                            
+                            let stream = stream_guard.deref_mut();
+                            serialize_response(&result, &mut *stream, &hmac_key).await.unwrap();
+                        }
+
+                        println!(
+                            "(proc_id: {}, stream_id: {}) stream unlocked after write", 
+                            self_rank, 
+                            stream_id
+                        );
+                        println!(
+                            "(proc_id: {}, stream_id: {}) responded to request {}", 
                             self_rank, 
                             stream_id,
-                            cmd_type,
-                            cmd_sender,
+                            req_id, 
                         );
-                    },
-                    
-                    RegisterCommand::Client(cmd) => {
-                        let req_id = cmd.header.request_identifier;
-        
-                        let hmac_key = hmac_client_key.clone();
-                        let write_stream_ref_clone = write_stream_ref.clone();
-                        let operation_complete: Box<
-                            dyn FnOnce(OperationComplete) 
-                                    -> Pin<Box<dyn Future<Output = ()> + core::marker::Send>>
-                                + core::marker::Send
-                                + core::marker::Sync,
-                        > = Box::new(move |result| {
-                            Box::pin(async move {
-                                
-                                println!(
-                                    "(proc_id: {}, stream_id: {}) responding to request {}", 
-                                    self_rank,
-                                    stream_id,
-                                    req_id, 
-                                );
+                        
+                        
+                    })
+                });
 
-                                {
-                                    let mut stream_guard;
-                                    { stream_guard = write_stream_ref_clone.lock().await; }
-                                    println!(
-                                        "(proc_id: {}, stream_id: {}) stream locked to write", 
-                                        self_rank, 
-                                        stream_id
-                                    );
-                                    
-                                    let stream = stream_guard.deref_mut();
-                                    serialize_response(&result, &mut *stream, &hmac_key).await.unwrap();
-                                }
-
-                                println!(
-                                    "(proc_id: {}, stream_id: {}) stream unlocked after write", 
-                                    self_rank, 
-                                    stream_id
-                                );
-                                println!(
-                                    "(proc_id: {}, stream_id: {}) responded to request {}", 
-                                    self_rank, 
-                                    stream_id,
-                                    req_id, 
-                                );
-                                
-                                
-                            })
-                        });
-        
-                        {   
-                            let mut ar ;
-                            { ar = atomic_register.lock().await; }
-                            println!(
-                                "(proc_id: {}, stream_id: {}) ar locked to handle `{}` from {}", 
-                                self_rank,  
-                                stream_id,
-                                cmd_type,
-                                cmd_sender,
-                            );
-                            ar.client_command(cmd, operation_complete).await;
-                        }
-                        println!(
-                            "(proc_id: {}, stream_id: {}) ar unlocked after handle `{}` from {}", 
-                            self_rank,  
-                            stream_id,
-                            cmd_type,
-                            cmd_sender,
-                        );
-                    },
-                };
-        
-                println!(
-                    "(proc_id: {}, stream_id: {}) end of `process_command`", 
-                    self_rank, 
-                    stream_id,
-                );
-            },
-
-            Err(e) => {
-                if e.kind() == ErrorKind::UnexpectedEof {
+                {   
+                    let mut ar ;
+                    { ar = atomic_register.lock().await; }
                     println!(
-                        "(proc_id: {}, stream_id: {}) connection closed", 
-                        self_rank, 
+                        "(proc_id: {}, stream_id: {}) ar locked to handle `{}` from {}", 
+                        self_rank,  
                         stream_id,
+                        cmd_type,
+                        cmd_sender,
                     );
-                    break; 
+                    ar.client_command(cmd, operation_complete).await;
                 }
                 println!(
-                    "(proc_id: {}, stream_id: {}) ERROR: {}", 
-                    self_rank, 
-                    stream_id, e
+                    "(proc_id: {}, stream_id: {}) ar unlocked after handle `{}` from {}", 
+                    self_rank,  
+                    stream_id,
+                    cmd_type,
+                    cmd_sender,
                 );
             },
-        }
+        };
+
+        println!(
+            "(proc_id: {}, stream_id: {}) end of `process_command`", 
+            self_rank, 
+            stream_id,
+        );
+            
 
         println!(
             "(proc_id: {}, stream_id: {}) end of loop body", 
