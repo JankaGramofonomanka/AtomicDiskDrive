@@ -24,4 +24,4 @@ pub const WRITE_RETURN_TYPE:    u8 = 0x40 + 0x02;
 pub const MAX_CMD_TYPE:         u8 = ACK_TYPE;
 pub const MIN_CMD_TYPE:         u8 = READ_TYPE;
 
-
+pub const NUM_REGISTERS:        u32 = 16;

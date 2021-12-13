@@ -23,6 +23,9 @@ use std::io::ErrorKind;
 use tokio::sync::Mutex;
 use std::ops::DerefMut;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use std::collections::{HashMap, VecDeque};
+use uuid::Uuid;
+use crate::constants::*;
 
 pub async fn run_register_process(config: Configuration) {
 
@@ -53,21 +56,37 @@ pub async fn run_register_process(config: Configuration) {
 }
 
 struct RegisterProcess {
-    config: Configuration,
-    atomic_register: Arc<Mutex<ARModule>>,
+    config:             Configuration,
+    atomic_registers:   HashMap<Uuid, Arc<Mutex<ARModule>>>,
+    ar_ids:             Mutex<VecDeque<Uuid>>,
+
 }
 
 impl RegisterProcess {
 
     async fn new(config: Configuration) -> Arc<Self> {
-        let ar = RegisterProcess::build_ar(&config).await;
+
+        let mut process = RegisterProcess{
+            config:             config,
+            atomic_registers:   HashMap::new(),
+            ar_ids:             Mutex::new(VecDeque::new()),
+        };
+
+        process.build_registers(NUM_REGISTERS).await;
         
-        Arc::new(
-            RegisterProcess{
-                config: config,
-                atomic_register: Arc::new(Mutex::new(ar)),
+        Arc::new(process)
+    }
+
+    async fn next_id(&self) -> Uuid {
+        let mut ids = self.ar_ids.lock().await; 
+        let id = ids.pop_front();
+        match id {
+            None => panic!("no registers in register process"),
+            Some(id) => {
+                ids.push_back(id);
+                id
             }
-        )
+        }
     }
 
     async fn handle_stream<'a>(
@@ -146,9 +165,24 @@ impl RegisterProcess {
             // handling -----------------------------------------------------------
             match cmd {
                 RegisterCommand::System(cmd) => {
-                    
-                    let mut ar = self.atomic_register.lock().await;
-                    ar.system_command(cmd).await;
+
+                    /* If `cmd` is a response (ie. `Ack` or `Value`) then 
+                     * `cmd.header.msg_ident` is the id of the register that 
+                     * had sent the request
+                     */
+                    let ar_id = if is_response(&cmd) { cmd.header.msg_ident } else { self.next_id().await };
+                    match self.atomic_registers.get(&ar_id) {
+
+                        /* If `cmd.header.msg_ident` was invalid, that means
+                         * `cmd` is not a response to any of our atomic 
+                         * registers, therefore do nothing
+                         */
+                        None => {},
+
+                        Some(ar) => {
+                            ar.lock().await.system_command(cmd).await;
+                        }
+                    }
                 },
                 
                 RegisterCommand::Client(cmd) => {
@@ -170,7 +204,8 @@ impl RegisterProcess {
                         })
                     });
 
-                    let mut ar = self.atomic_register.lock().await;
+                    let ar_id = self.next_id().await;
+                    let mut ar = self.atomic_registers.get(&ar_id).unwrap().lock().await;
                     ar.client_command(cmd, operation_complete).await;
                 },
             };
@@ -182,50 +217,56 @@ impl RegisterProcess {
 
 
 
-    async fn build_ar(config: &Configuration)
-        -> ARModule {
+    async fn build_registers(&mut self, num_registers: u32) {
 
         // TODO: what to do with the unwraps?
 
-        let processes_count = config.public.tcp_locations.len();
+        let processes_count = self.config.public.tcp_locations.len();
 
         // build register client
         let register_client = Arc::new(
-            RCModule::new(config.public.tcp_locations.clone(), config.hmac_system_key)
+            RCModule::new(self.config.public.tcp_locations.clone(), self.config.hmac_system_key)
         );
 
         // build sectors manager
-        let mut sectors_dir = config.public.storage_dir.clone();
+        let mut sectors_dir = self.config.public.storage_dir.clone();
         sectors_dir.push("sectors");
         if !sectors_dir.is_dir() {
             create_dir(sectors_dir.clone()).await.unwrap();
         }
         let sectors_manager = build_sectors_manager(sectors_dir);
 
-        let self_rank = config.public.self_rank;
+        let self_rank = self.config.public.self_rank;
 
 
+        self.atomic_registers = HashMap::new();
+        let mut ar_ids = VecDeque::new();
 
-        // build stable sotrage
-        // TODO: should this be global or per atomic register
-        let mut metadata_dir = config.public.storage_dir.clone();
-        metadata_dir.push("ar_metadata");
-        if !metadata_dir.is_dir() {
-            create_dir(metadata_dir.clone()).await.unwrap();
+        for _ in 0..num_registers {
+            // build stable sotrage
+            // TODO: should this be global or per atomic register
+            let mut metadata_dir = self.config.public.storage_dir.clone();
+            metadata_dir.push("ar_metadata");
+            if !metadata_dir.is_dir() {
+                create_dir(metadata_dir.clone()).await.unwrap();
+            }
+            let metadata = Storage::new(metadata_dir).await;
+            
+            let atomic_register = ARModule::new(
+                self_rank,
+                Box::new(metadata),
+                register_client.clone(),
+                sectors_manager.clone(),
+                processes_count,
+            ).await;
+
+            let ar_id = atomic_register.info.uuid;
+
+            self.atomic_registers.insert(ar_id, Arc::new(Mutex::new(atomic_register)));
+            ar_ids.push_back(ar_id);
         }
-        let metadata = Storage::new(metadata_dir).await;
-        
-        let atomic_register = ARModule::new(
-            self_rank,
-            Box::new(metadata),
-            register_client.clone(),
-            sectors_manager.clone(),
-            processes_count,
-        ).await;
 
-
-        atomic_register
-
+        self.ar_ids = Mutex::new(ar_ids);
     }
 }
 
@@ -251,6 +292,15 @@ fn get_sector_idx(cmd: &RegisterCommand) -> SectorIdx {
     match cmd {
         RegisterCommand::System(cmd) => cmd.header.sector_idx,
         RegisterCommand::Client(cmd) => cmd.header.sector_idx,
+    }
+}
+
+fn is_response(cmd: &SystemRegisterCommand) -> bool {
+    match cmd.content {
+        SystemRegisterCommandContent::Ack               => true,
+        SystemRegisterCommandContent::ReadProc          => false,
+        SystemRegisterCommandContent::WriteProc { .. }  => false,
+        SystemRegisterCommandContent::Value     { .. }  => true,
     }
 }
 

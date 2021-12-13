@@ -89,10 +89,10 @@ enum ARPhase {
     Idle,
 }
 
-struct ARInfo {
+pub struct ARInfo {
     processes_count:    u8,
     process_id:         u8,
-    uuid:               Uuid,
+    pub uuid:           Uuid,
 }
 
 struct ARState {
@@ -121,7 +121,7 @@ pub struct ARModule {
     sectors_manager:    Arc<dyn SectorsManager>,
 
     state:              Arc<Mutex<ARState>>,
-    info:               Arc<ARInfo>,
+    pub info:           Arc<ARInfo>,
 
     notifier:           Arc<Notify>,
     
