@@ -95,23 +95,23 @@ pub struct ARInfo {
     pub uuid:           Uuid,
 }
 
-struct ARState {
+pub struct ARState {
     
-    read_id:            u64,
-    sector_idx:         Option<SectorIdx>,
-    readlist:           Vec<SectorData>,
-    acks:               u8,
-    phase:              ARPhase,
-    writeval:           Option<SectorVec>,
-    readval:            Option<SectorVec>,
-    write_phase:        bool,
-    callback_op:        Option<Box<
-                            dyn FnOnce(OperationComplete)
-                                -> Pin<Box<dyn Future<Output = ()> + Send>>
-                                + Send
-                                + Sync,
-                        >>,
-    request_id:         Option<u64>,
+    read_id:        u64,
+    sector_idx:     Option<SectorIdx>,
+    readlist:       Vec<SectorData>,
+    acks:           u8,
+    phase:          ARPhase,
+    writeval:       Option<SectorVec>,
+    readval:        Option<SectorVec>,
+    write_phase:    bool,
+    callback_op:    Option<Box<
+                        dyn FnOnce(OperationComplete)
+                            -> Pin<Box<dyn Future<Output = ()> + Send>>
+                            + Send
+                            + Sync,
+                    >>,
+    pub request_id: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -120,10 +120,8 @@ pub struct ARModule {
     register_client:    Arc<dyn RegisterClient>,
     sectors_manager:    Arc<dyn SectorsManager>,
 
-    state:              Arc<Mutex<ARState>>,
+    pub state:          Arc<Mutex<ARState>>,
     pub info:           Arc<ARInfo>,
-
-    notifier:           Arc<Notify>,
     
 }
 
@@ -162,7 +160,7 @@ impl ARModule {
         let msg = register_client_public::Broadcast {
             cmd: Arc::new(broadcast_cmd),
         };
-        register_client.broadcast(msg).await
+        register_client.broadcast(msg).await;
     }
 
     async fn respond(
@@ -407,7 +405,6 @@ impl ARModule {
     async fn ack(
         ar_info:            Arc<ARInfo>,
         ar_state_ref:       Arc<Mutex<ARState>>, 
-        notifier:           Arc<Notify>,
 
         cmd_header:         SystemCommandHeader,
     ) {
@@ -452,10 +449,8 @@ impl ARModule {
                 }
             }
 
-            // notify any pending client operations
             ar_state.request_id = None;
             ar_state.sector_idx = None;
-            notifier.notify_one();
         }
     }
 
@@ -613,9 +608,6 @@ impl ARModule {
                 }
             )),
             
-
-            notifier: Arc::new(Notify::new()),
-            
         }
     }
 
@@ -626,7 +618,6 @@ impl ARModule {
         sectors_manager:    Arc<dyn SectorsManager>,
         register_client:    Arc<dyn RegisterClient>,
         metadata:           Arc<Mutex<Box<dyn StableStorage>>>,
-        notifier:           Arc<Notify>,
         
         cmd:                ClientRegisterCommand,
         operation_complete: Box<
@@ -635,16 +626,6 @@ impl ARModule {
                                     + Sync,
                             >,
     ) {
-        let mut ready;
-        { ready = is_none(ar_state_ref.lock().await.request_id) }
-        // wait until the previous client command is handled
-        while !ready {
-            
-            notifier.notified().await;
-
-            { ready = is_none(ar_state_ref.lock().await.request_id) }
-        }
-
         {
             let mut ar_state_guard = ar_state_ref.lock().await;
             let ar_state = ar_state_guard.deref_mut();
@@ -682,7 +663,6 @@ impl ARModule {
         ar_state_ref:       Arc<Mutex<ARState>>, 
         sectors_manager:    Arc<dyn SectorsManager>,
         register_client:    Arc<dyn RegisterClient>,
-        notifier:           Arc<Notify>,
 
         cmd:                SystemRegisterCommand,
     ) {
@@ -723,7 +703,6 @@ impl ARModule {
                 => ARModule::ack(        
                     ar_info,
                     ar_state_ref, 
-                    notifier,
                     cmd_header,
                 ).await,
         }
@@ -747,30 +726,28 @@ impl AtomicRegister for ARModule {
                 + Sync,
         >,
     ) {
-        // wait until the previous client command is handled
         
-        tokio::spawn(ARModule::handle_client(
+        ARModule::handle_client(
             self.info.clone(), 
             self.state.clone(), 
             self.sectors_manager.clone(), 
             self.register_client.clone(), 
             self.metadata.clone(), 
-            self.notifier.clone(), 
             cmd, 
             operation_complete,
-        ));
+        ).await;
     }
 
     /// Send system command to the register.
     async fn system_command(&mut self, cmd: SystemRegisterCommand) {
-        tokio::spawn(ARModule::handle_system(
+        
+        ARModule::handle_system(
             self.info.clone(), 
             self.state.clone(), 
             self.sectors_manager.clone(), 
             self.register_client.clone(), 
-            self.notifier.clone(), 
             cmd,
-        ));
+        ).await;
     }
 }
 
