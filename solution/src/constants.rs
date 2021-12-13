@@ -25,5 +25,3 @@ pub const MAX_CMD_TYPE:         u8 = ACK_TYPE;
 pub const MIN_CMD_TYPE:         u8 = READ_TYPE;
 
 
-pub const SECTORS_PER_GROUP:    u8 = 20;
-

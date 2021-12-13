@@ -114,6 +114,7 @@ struct ARState {
     request_id:         Option<u64>,
 }
 
+#[derive(Clone)]
 pub struct ARModule {
     metadata:           Arc<Mutex<Box<dyn StableStorage>>>,
     register_client:    Arc<dyn RegisterClient>,
@@ -156,14 +157,6 @@ impl ARModule {
         header:             SystemCommandHeader,
         content:            SystemRegisterCommandContent,
     ) {
-
-        println!(
-            "(proc_id: {}) broadcast `{}` msg", 
-            ar_info.process_id, 
-            cmd_type(&content),
-        );
-
-
         let broadcast_cmd = ARModule::prepare_cmd(ar_info, header, content);
 
         let msg = register_client_public::Broadcast {
@@ -178,13 +171,6 @@ impl ARModule {
         request_header:     SystemCommandHeader, 
         content:            SystemRegisterCommandContent, 
     ) {
-
-        println!(
-            "(proc_id: {}) send `{}` msg to {}", 
-            ar_info.process_id, 
-            cmd_type(&content),
-            request_header.process_identifier
-        );
 
         let response_cmd = ARModule::prepare_cmd(ar_info, request_header, content);
 
@@ -587,7 +573,7 @@ impl ARModule {
         writing := FALSE;
         writeval := _;
     */
-    async fn new(
+    pub async fn new(
         self_ident: u8,
         metadata: Box<dyn StableStorage>,
         register_client: Arc<dyn RegisterClient>,
@@ -796,16 +782,4 @@ fn is_none<T>(x: Option<T>) -> bool {
 }
 
 
-fn cmd_type(content: &SystemRegisterCommandContent) -> String {
-    match content {
-        SystemRegisterCommandContent::ReadProc
-            => format!("ReadProc"),
-        SystemRegisterCommandContent::Value { timestamp: _, write_rank: _, sector_data: _ }
-            => format!("Value"),
-        SystemRegisterCommandContent::WriteProc { timestamp: _, write_rank: _, data_to_write: _ }
-            => format!("WriteProc"),
-        SystemRegisterCommandContent::Ack
-            => format!("Ack"),
-    }
 
-}
