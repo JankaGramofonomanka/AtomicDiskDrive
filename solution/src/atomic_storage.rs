@@ -1,21 +1,18 @@
 
 use std::path::{Path, PathBuf};
-use tokio::fs::{File, rename};
+use tokio::fs::{File, rename, create_dir_all, remove_file};
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
 use std::ffi::OsStr;
 
 
 #[allow(non_snake_case)]
-fn TMP_PATH(filepath: impl AsRef<Path>) -> PathBuf {
-    let filename = match filepath.as_ref().file_name() {
+fn TMP_PATH(filepath: &PathBuf) -> PathBuf {
+    
+    let parent = PARENT(&filepath);
+    let filename = match filepath.file_name() {
         Some(name)  => name,
         None        => OsStr::new(""),
     };
-    let parent = match filepath.as_ref().parent() {
-        Some(path)  => path,
-        None        => Path::new("/"),
-    };
-    
     let tmp_filename = format!("{}.tmp", filename.to_str().unwrap());
 
     let mut tmp_path = PathBuf::new();
@@ -24,6 +21,17 @@ fn TMP_PATH(filepath: impl AsRef<Path>) -> PathBuf {
     tmp_path
 }
 
+#[allow(non_snake_case)]
+fn PARENT(filepath: &PathBuf) -> PathBuf {
+    let parent = match filepath.parent() {
+        Some(path)  => path,
+        None        => Path::new("/"),
+    };
+
+    let mut parent_buf = PathBuf::new();
+    parent_buf.push(parent);
+    parent_buf
+}
 
 pub struct AtomicStorage {
     dir: PathBuf,
@@ -31,10 +39,13 @@ pub struct AtomicStorage {
 
 impl AtomicStorage {
 
-    pub fn new(dir: PathBuf) -> Self {
+    pub fn new(dir: impl AsRef<Path>) -> Self {
+        
+        let mut main_dir = PathBuf::new();
+        main_dir.push(dir);
         
         AtomicStorage {
-            dir: dir,
+            dir: main_dir,
         }
     }
 
@@ -46,12 +57,16 @@ impl AtomicStorage {
         
 
     // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
-    /// Atomically stores `value` in `{self.dir}/{filename}`
-    pub async fn store_atomic(&self, filename: impl AsRef<Path>, value: &[u8])
+    /// Atomically stores `value` in `{self.dir}/{relative_path}`.
+    pub async fn store_atomic(&self, relative_path: impl AsRef<Path>, value: &[u8])
         -> Result<(), String> {
 
-        let file_path = self.get_path(filename);
-        let tmpfile_path = TMP_PATH(file_path.clone());
+        let file_path = self.get_path(relative_path);
+        let tmpfile_path = TMP_PATH(&file_path);
+        let parent_dir = PARENT(&file_path);
+        if !parent_dir.is_dir() {
+            create_dir_all(&parent_dir).await.unwrap();
+        }
 
         {
             let mut tmpfile = File::create(tmpfile_path.clone()).await.unwrap();
@@ -61,31 +76,24 @@ impl AtomicStorage {
 
         rename(tmpfile_path, file_path).await.unwrap();
         
-        let dir = File::open(self.dir.clone()).await.unwrap();
+        let dir = File::open(parent_dir).await.unwrap();
         dir.sync_data().await.unwrap();
 
         Ok(())
     }
 
-    pub async fn read(&self, filename: impl AsRef<Path>, num_bytes: Option<usize>) 
+    /// Reads a file if it exists (and is indeed a file) and returns its content.
+    /// Otherwise, returns `None`.
+    pub async fn read(&self, relative_path: impl AsRef<Path>) 
         -> Option<Vec<u8>> {
         
-        let file_path = self.get_path(filename);
+        let file_path = self.get_path(relative_path);
 
         if file_path.is_file() {
             let mut file = File::open(file_path).await.unwrap();
             let mut file_contents: Vec<u8> = vec![];
 
-            match num_bytes {
-                None    => {
-                    file.read_to_end(&mut file_contents).await.unwrap();
-                },
-
-                Some(n) => {
-                    file_contents = vec![0; n];
-                    file.read_exact(&mut file_contents).await.unwrap();
-                },
-            }
+            file.read_to_end(&mut file_contents).await.unwrap();
 
             Some(file_contents)
 
@@ -93,7 +101,19 @@ impl AtomicStorage {
 
             None
         }
-        
+    }
+
+    /// Removes a file if it exists (and is indeed a file).
+    pub async fn remove(&self, relative_path: impl AsRef<Path>) {
+        let file_path = self.get_path(relative_path);
+
+        if file_path.is_file() {
+            remove_file(file_path).await;
+
+        } else {
+
+            
+        }
     }
 }
 
