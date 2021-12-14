@@ -76,8 +76,10 @@ impl RegisterProcess {
     async fn new(config: Configuration) -> Arc<Self> {
 
         let mut sector_handlers = vec![];
+        let mut pending_handlers = vec![];
         for _ in 0..config.public.max_sector {
             sector_handlers.push(Mutex::new(None));
+            pending_handlers.push(Mutex::new(0));
         }
 
         let mut process = RegisterProcess{
@@ -111,9 +113,7 @@ impl RegisterProcess {
         ids.lock().await.push_back(id);
 
         // notify a pending client handler that an atomic register is free
-        notifier.notify_one();
-
-        //println!("(id: {}) register marked as free", id);
+        notifier.notify_waiters();
     }
     
     async fn get_free_id(&self) -> Uuid {
@@ -132,7 +132,49 @@ impl RegisterProcess {
             }
         }
     }
+
+    async fn wait_till_ready(&self, sector_idx: SectorIdx, notifier: Arc<Notify>) {
+        let mut ready = false;
+        let sector_idx = sector_idx as usize;
+        
+        while !ready {
+            let notif;
+            {
+                let guard = self.sector_handlers[sector_idx].lock().await;
+                notif = (*guard).clone();
+            }
+            match notif {
+                None => { 
+        
+                    // mark the sector as being in use
+                    let mut guard = self.sector_handlers[sector_idx].lock().await;
+                    let notif = guard.deref_mut();
+                    *notif = Some(notifier.clone());
+        
+                    ready = true; 
+                },
+
+                Some(previous_notifier) => {
+        
+                    previous_notifier.notified().await;
+                },
+            }
+        }
+    }
     
+    async fn free_up_sector(&self, sector_idx: SectorIdx, notifier: Arc<Notify>) {
+        let sector_idx = sector_idx as usize;
+
+        // mark the sector as free
+        {
+            let mut guard = self.sector_handlers[sector_idx].lock().await;
+            let notif = guard.deref_mut();
+            *notif = None;
+        }
+
+        // notify any pending handlers that the sector is free
+        notifier.notify_waiters();
+    }
 
     async fn handle_stream<'a>(
         self: Arc<Self>, 
@@ -228,43 +270,13 @@ impl RegisterProcess {
         write_stream_ref: Arc<Mutex<OwnedWriteHalf>>, 
         cmd: RegisterCommand,
     ) {
-        let sector_idx = get_sector_idx(&cmd) as usize;
-
-        let sector_notifier = Arc::new(Notify::new());
-
-        /*
-        // wait untill the sector is not in use
-        let mut ready = false;
-        while !ready {
-            let notif;
-            {
-                let guard = self.sector_handlers[sector_idx].lock().await;
-                notif = (*guard).clone();
-            }
-            match notif {
-                None            => { 
-                    println!("(sector_idx: {}) sector free", sector_idx);
-                    ready = true; 
-
-                    // mark the sector as being in use
-                    {
-                        let mut guard = self.sector_handlers[sector_idx].lock().await;
-                        let notif = guard.deref_mut();
-                        *notif = Some(sector_notifier.clone());
-                    }
-                    println!("(sector_idx: {}) sector marked busy", sector_idx);
-                }
-                Some(notifier)  => {
-                    println!("(sector_idx: {}) sector busy", sector_idx);
-                    notifier.notified().await;
-                }
-            }
-        }
-        */
+        
 
         
 
-        //println!("received {} from {}", cmd_type(&cmd), cmd_sender(&cmd));
+        let sector_idx = get_sector_idx(&cmd);
+        
+
         match cmd {
             RegisterCommand::System(cmd) => {
 
@@ -287,17 +299,15 @@ impl RegisterProcess {
                     None => {},
 
                     Some(ar_mutex) => {
+
+                        let notifier = Arc::new(Notify::new());
+                        self.wait_till_ready(sector_idx, notifier.clone()).await;
+                        
                         let mut ar_guard = ar_mutex.lock().await;
                         let ar = ar_guard.deref_mut();
                         ar.system_command(cmd).await;
                         
-                        /*
-                        if is_ack && is_finished(ar).await {
-
-                            println!("(id: {}) estimated as finished", ar_id);
-                            self.put_free_id(ar_id).await;
-                        }
-                        */
+                        self.free_up_sector(sector_idx, notifier).await;
                     }
                 }
 
@@ -330,28 +340,17 @@ impl RegisterProcess {
                     })
                 });
 
+                let notifier = Arc::new(Notify::new());
+                self.wait_till_ready(sector_idx, notifier.clone()).await;
                 
                 let mut ar = self.atomic_registers.get(&ar_id).unwrap().lock().await;
                 {ar.client_command(cmd, operation_complete).await;}
 
-                
+                self.free_up_sector(sector_idx, notifier).await;
             },
         };
 
-        /*
-        self.print_sector_handler_content(sector_idx).await;
-        // mark the sector as free
-        {
-            let mut guard = self.sector_handlers[sector_idx].lock().await;
-            let notif = guard.deref_mut();
-            *notif = None;
-        }
-        println!("(sector_idx: {}) sector marked free", sector_idx);
-
-        self.print_sector_handler_content(sector_idx).await;
-        // notify any pending handlers that the sector is free
-        sector_notifier.notify_one();
-        */
+        
     }
 
 
@@ -449,3 +448,4 @@ fn is_response(cmd: &SystemRegisterCommand) -> bool {
         SystemRegisterCommandContent::Value     { .. }  => true,
     }
 }
+
