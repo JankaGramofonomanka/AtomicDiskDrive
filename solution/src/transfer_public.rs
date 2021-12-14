@@ -259,12 +259,12 @@ pub async fn serialize_client_command(
     hmac_key: &[u8],
 ) -> Result<(), Error> {
 
-    
-    let padding = [0; CLIENT_REQUEST_PADDING_LENGTH];
+    let mut after_magic_num = [0; 4];
     let msg_type = match cmd.content {
         ClientRegisterCommandContent::Read              => READ_TYPE,
         ClientRegisterCommandContent::Write { data: _ } => WRITE_TYPE,
     };
+    after_magic_num[3] = msg_type;
 
     let empty_vec = vec![];
     let content = match &cmd.content {
@@ -276,8 +276,7 @@ pub async fn serialize_client_command(
 
     let message = [
         &MAGIC_NUMBER[..],
-        &padding[..],
-        &[msg_type][..],
+        &after_magic_num[..],
 
         &cmd.header.request_identifier.to_be_bytes()[..],
         &cmd.header.sector_idx.to_be_bytes()[..],
@@ -297,8 +296,8 @@ pub async fn serialize_system_command(
     hmac_key: &[u8],
 ) -> Result<(), Error> {
 
-    
-    let padding = [0; SYSTEM_PADDING_LENGTH];
+
+    let mut after_magic_num = [0; 4];
     let msg_type = match &cmd.content {
         SystemRegisterCommandContent::ReadProc => READ_PROC_TYPE,
         SystemRegisterCommandContent::Value {
@@ -315,6 +314,8 @@ pub async fn serialize_system_command(
 
         SystemRegisterCommandContent::Ack => ACK_TYPE,
     };
+    after_magic_num[2] = cmd.header.process_identifier;
+    after_magic_num[3] = msg_type;
 
     let content = match &cmd.content {
         SystemRegisterCommandContent::ReadProc => vec![],
@@ -338,9 +339,7 @@ pub async fn serialize_system_command(
 
     let message = [
         &MAGIC_NUMBER[..],
-        &padding[..],
-        &[cmd.header.process_identifier][..],
-        &[msg_type][..],
+        &after_magic_num[..],
 
         // According to documentation Uuid::as_bytes() returns &[u8; 16]
         &cmd.header.msg_ident.as_bytes()[..],
@@ -359,14 +358,13 @@ pub async fn serialize_system_command(
 }
 
 fn system_content(timestamp: &u64, write_rank: &u8, sector_data: &SectorVec) -> Vec<u8> {
-                        
 
-    let padding = [0; READ_WRITE_PROC_PADDING_LENGTH];
+    let mut after_timestamp = [0; 8];
+    after_timestamp[7] = *write_rank;
 
     [
         &timestamp.to_be_bytes()[..],
-        &padding[..],
-        &[*write_rank][..],
+        &after_timestamp[..],
 
         &sector_data.0[..]
 
@@ -379,11 +377,13 @@ pub async fn serialize_response(
     hmac_key: &[u8],
 ) -> Result<(), Error> {
     
-    let padding = [0; CLIENT_RESPONSE_PADDING_LENGTH];
+    let mut after_magic_num = [0; 4];
     let msg_type = match response.op_return {
         OperationReturn::Read(_)    => READ_RETURN_TYPE,
         OperationReturn::Write      => WRITE_RETURN_TYPE,
     };
+    after_magic_num[2] = response.status_code as u8;
+    after_magic_num[3] = msg_type;
 
     let empty_vec = vec![];
     let content = match &response.op_return {
@@ -402,9 +402,7 @@ pub async fn serialize_response(
 
     let message = [
         &MAGIC_NUMBER[..],
-        &padding[..],
-        &[response.status_code as u8][..],
-        &[msg_type][..],
+        &after_magic_num[..],
         &response.request_identifier.to_be_bytes(),
 
         &content[..],

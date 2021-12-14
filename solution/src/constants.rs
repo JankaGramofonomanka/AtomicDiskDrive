@@ -1,9 +1,4 @@
 
-// Pandding lengths
-pub const CLIENT_REQUEST_PADDING_LENGTH:    usize = 8 - 4 - 1;
-pub const CLIENT_RESPONSE_PADDING_LENGTH:   usize = 8 - 4 - 2;
-pub const SYSTEM_PADDING_LENGTH:            usize = 8 - 4 - 2;
-pub const READ_WRITE_PROC_PADDING_LENGTH:   usize = 8 - 1;
 
 // Message types
 pub const SECTOR_SIZE:              usize = 4096;
