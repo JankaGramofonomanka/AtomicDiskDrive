@@ -357,11 +357,11 @@ impl RegisterProcess {
             if !metadata_dir.is_dir() {
                 create_dir(metadata_dir.clone()).await.unwrap();
             }
-            let metadata = Storage::new(metadata_dir).await;
+            let metadata = build_stable_storage(metadata_dir).await;
             
             let atomic_register = ARModule::new(
                 self_rank,
-                Box::new(metadata),
+                metadata,
                 register_client.clone(),
                 sectors_manager.clone(),
                 processes_count,

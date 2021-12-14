@@ -108,7 +108,7 @@ impl AtomicStorage {
         let file_path = self.get_path(relative_path);
 
         if file_path.is_file() {
-            remove_file(file_path).await;
+            remove_file(file_path).await.unwrap();
 
         } else {
 
