@@ -351,7 +351,6 @@ impl RegisterProcess {
         for i in 0..num_registers {
             
             // build stable sotrage
-            // TODO: should this be global or per atomic register
             let mut metadata_dir = self.config.public.storage_dir.clone();
             metadata_dir.push(format!("ar{}", i));
             if !metadata_dir.is_dir() {

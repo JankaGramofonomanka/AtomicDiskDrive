@@ -134,8 +134,6 @@ impl ARModule {
         
         let mut prep_header = header.clone();
 
-        // TODO: are you sure `self_ident` (param of `build_atomic_register`) 
-        // is the id of the process, not of the AR?
         prep_header.process_identifier = self.info.process_id;
 
         let cmd = SystemRegisterCommand {

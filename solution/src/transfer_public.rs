@@ -135,8 +135,6 @@ pub async fn deserialize_register_command(
                 content:    content,
             };
 
-            // TODO, Are you sure, that the `bool` in the tuple is supposed 
-            // to be what it is?
             return Ok((RegisterCommand::Client(cmd), msg_valid));
               
         } else if SYSTEM_TYPE(msg_type) {
@@ -221,8 +219,6 @@ pub async fn deserialize_register_command(
                 content:    content,
             };
 
-            // TODO, Are you sure, that the `bool` in the tuple is supposed 
-            // to be what it is?
             return Ok((RegisterCommand::System(cmd), msg_valid));
 
         }

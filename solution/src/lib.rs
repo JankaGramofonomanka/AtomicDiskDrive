@@ -33,8 +33,6 @@ pub async fn run_register_process(config: Configuration) {
     let address = format!("{}:{}", self_host, self_port);
     let listener = TcpListener::bind(address).await.unwrap();
 
-    //let atomic_register = Arc::new(Mutex::new(RegisterProcess::build_ar(&config).await));
-    
     let register_process = RegisterProcess::new(config).await;
     loop {
         
