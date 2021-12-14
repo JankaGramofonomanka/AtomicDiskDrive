@@ -7,10 +7,9 @@ use std::sync::Arc;
 
 use std::cmp::{Eq, PartialEq};
 use uuid::Uuid;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::Mutex;
 use std::ops::DerefMut;
 use crate::domain::*;
-use serde::{Deserialize, Serialize};
 
 use crate::register_client_public;
 
@@ -90,9 +89,9 @@ enum ARPhase {
 }
 
 pub struct ARInfo {
-    processes_count:    u8,
-    process_id:         u8,
-    pub uuid:           Uuid,
+    pub processes_count:    u8,
+    pub process_id:         u8,
+    pub uuid:               Uuid,
 }
 
 pub struct ARState {
@@ -111,25 +110,24 @@ pub struct ARState {
                             + Send
                             + Sync,
                     >>,
-    pub request_id: Option<u64>,
+    request_id:     Option<u64>,
 }
 
 #[derive(Clone)]
 pub struct ARModule {
+    pub info:           Arc<ARInfo>,
+    state:              Arc<Mutex<ARState>>,
+
     metadata:           Arc<Mutex<Box<dyn StableStorage>>>,
     register_client:    Arc<dyn RegisterClient>,
     sectors_manager:    Arc<dyn SectorsManager>,
-
-    pub state:          Arc<Mutex<ARState>>,
-    pub info:           Arc<ARInfo>,
-    
 }
 
 
 impl ARModule {
 
     fn prepare_cmd(
-        ar_info:    Arc<ARInfo>,
+        &self,
         header:     SystemCommandHeader,
         content:    SystemRegisterCommandContent,
     ) -> SystemRegisterCommand {
@@ -138,7 +136,7 @@ impl ARModule {
 
         // TODO: are you sure `self_ident` (param of `build_atomic_register`) 
         // is the id of the process, not of the AR?
-        prep_header.process_identifier = ar_info.process_id;
+        prep_header.process_identifier = self.info.process_id;
 
         let cmd = SystemRegisterCommand {
             header:     prep_header,
@@ -150,34 +148,32 @@ impl ARModule {
     }
 
     async fn broadcast(
-        ar_info:            Arc<ARInfo>,
-        register_client:    Arc<dyn RegisterClient>,
-        header:             SystemCommandHeader,
-        content:            SystemRegisterCommandContent,
+        &self,
+        header:     SystemCommandHeader,
+        content:    SystemRegisterCommandContent,
     ) {
-        let broadcast_cmd = ARModule::prepare_cmd(ar_info, header, content);
+        let broadcast_cmd = self.prepare_cmd(header, content);
 
         let msg = register_client_public::Broadcast {
             cmd: Arc::new(broadcast_cmd),
         };
-        register_client.broadcast(msg).await;
+        self.register_client.broadcast(msg).await;
     }
 
     async fn respond(
-        ar_info:            Arc<ARInfo>,
-        register_client:    Arc<dyn RegisterClient>,
-        request_header:     SystemCommandHeader, 
-        content:            SystemRegisterCommandContent, 
+        &self,
+        request_header: SystemCommandHeader, 
+        content:        SystemRegisterCommandContent, 
     ) {
 
-        let response_cmd = ARModule::prepare_cmd(ar_info, request_header, content);
+        let response_cmd = self.prepare_cmd(request_header, content);
 
         let msg = register_client_public::Send {
             cmd:    Arc::new(response_cmd),
             target: request_header.process_identifier as usize,
         };
 
-        register_client.send(msg).await;
+        self.register_client.send(msg).await;
     }
 
     async fn callback(
@@ -247,14 +243,12 @@ impl ARModule {
         trigger < sl, Send | p, [VALUE, r, ts, wr, val] >;
     */
     async fn read_proc(
-        ar_info:            Arc<ARInfo>,
-        sectors_manager:    Arc<dyn SectorsManager>,
-        register_client:    Arc<dyn RegisterClient>,
-
-        cmd_header:         SystemCommandHeader,
+        &self, 
+        cmd_header: SystemCommandHeader
     ) {
-        let (ts, wr) = sectors_manager.read_metadata(cmd_header.sector_idx).await;
-        let val = sectors_manager.read_data(cmd_header.sector_idx).await;
+
+        let (ts, wr) = self.sectors_manager.read_metadata(cmd_header.sector_idx).await;
+        let val = self.sectors_manager.read_data(cmd_header.sector_idx).await;
 
         let content = SystemRegisterCommandContent::Value {
             timestamp:      ts,
@@ -262,7 +256,7 @@ impl ARModule {
             sector_data:    val,
         };
 
-        ARModule::respond(ar_info, register_client, cmd_header, content).await
+        self.respond(cmd_header, content).await
     }
 
     /*
@@ -273,29 +267,21 @@ impl ARModule {
         trigger < sl, Send | p, [ACK, r] >;
     */
     async fn write_proc(
-        ar_info:            Arc<ARInfo>,
-        sectors_manager:    Arc<dyn SectorsManager>,
-        register_client:    Arc<dyn RegisterClient>,
-
-        cmd_header:         SystemCommandHeader,
-        timestamp:          u64,
-        write_rank:         u8,
-        data_to_write:      SectorVec,
+        &self,
+        cmd_header:     SystemCommandHeader,
+        timestamp:      u64,
+        write_rank:     u8,
+        data_to_write:  SectorVec,
     ) {
-        let (ts, wr) = sectors_manager.read_metadata(cmd_header.sector_idx).await;
+        let (ts, wr) = self.sectors_manager.read_metadata(cmd_header.sector_idx).await;
         if timestamp > ts || (timestamp == ts && write_rank > wr) {
-            sectors_manager.write(
+            self.sectors_manager.write(
                 cmd_header.sector_idx, 
                 &(data_to_write, timestamp, write_rank),
             ).await;
         }
 
-        ARModule::respond(
-            ar_info,
-            register_client,
-            cmd_header, 
-            SystemRegisterCommandContent::Ack
-        ).await
+        self.respond(cmd_header, SystemRegisterCommandContent::Ack).await
     }
 
     /*
@@ -315,32 +301,29 @@ impl ARModule {
                 trigger < sbeb, Broadcast | [WRITE_PROC, rid, maxts + 1, rank(self), writeval] >;
     */
     async fn value(
-        ar_info:            Arc<ARInfo>,
-        ar_state_ref:       Arc<Mutex<ARState>>, 
-        sectors_manager:    Arc<dyn SectorsManager>,
-        register_client:    Arc<dyn RegisterClient>,
-
-        cmd_header:         SystemCommandHeader,
-        timestamp:          u64,
-        write_rank:         u8,
-        sector_data:        SectorVec,
+        &self,
+        cmd_header:     SystemCommandHeader,
+        timestamp:      u64,
+        write_rank:     u8,
+        sector_data:    SectorVec,
     ) {
-        let mut ar_state_guard = ar_state_ref.lock().await;
+        
+        let mut ar_state_guard = self.state.lock().await;
         let ar_state = ar_state_guard.deref_mut();
 
         if ar_state.write_phase { return; }
 
         if cmd_header.read_ident != ar_state.read_id { return; }
         if Some(cmd_header.sector_idx) != ar_state.sector_idx { return; }
-        if ar_info.uuid != cmd_header.msg_ident { return; }
+        if self.info.uuid != cmd_header.msg_ident { return; }
 
         ar_state.readlist.push((timestamp, write_rank, sector_data));
 
         if ar_state.phase != ARPhase::Idle 
-        && ar_state.readlist.len() as u8 > ar_info.processes_count / 2 
+        && ar_state.readlist.len() as u8 > self.info.processes_count / 2 
         {
-            let (ts, wr) = sectors_manager.read_metadata(cmd_header.sector_idx).await;
-            let val = sectors_manager.read_data(cmd_header.sector_idx).await;
+            let (ts, wr) = self.sectors_manager.read_metadata(cmd_header.sector_idx).await;
+            let val = self.sectors_manager.read_data(cmd_header.sector_idx).await;
 
             ar_state.readlist.push((ts, wr, val));
 
@@ -362,7 +345,7 @@ impl ARModule {
                         data_to_write:  readval.clone(),
                     };
 
-                    ARModule::broadcast(ar_info, register_client, cmd_header, content).await
+                    self.broadcast(cmd_header, content).await
                 }
 
                 ARPhase::Writing => {
@@ -372,18 +355,18 @@ impl ARModule {
                         None => panic!("`writeval` is `None`"),
                     };
 
-                    sectors_manager.write(
+                    self.sectors_manager.write(
                         cmd_header.sector_idx, 
-                        &(writeval.clone(), maxts + 1, ar_info.process_id)
+                        &(writeval.clone(), maxts + 1, self.info.process_id)
                     ).await;
 
                     let content = SystemRegisterCommandContent::WriteProc {
                         timestamp:      *maxts + 1,
-                        write_rank:     ar_info.process_id, 
+                        write_rank:     self.info.process_id, 
                         data_to_write:  writeval,
                     };
 
-                    ARModule::broadcast(ar_info, register_client, cmd_header, content).await
+                    self.broadcast(cmd_header, content).await
                 }
             }
         }
@@ -403,21 +386,19 @@ impl ARModule {
                 trigger < nnar, WriteReturn >;
     */
     async fn ack(
-        ar_info:            Arc<ARInfo>,
-        ar_state_ref:       Arc<Mutex<ARState>>, 
-
-        cmd_header:         SystemCommandHeader,
+        &self,
+        cmd_header: SystemCommandHeader,
     ) {
 
-        let mut ar_state_guard = ar_state_ref.lock().await;
+        let mut ar_state_guard = self.state.lock().await;
         let ar_state = ar_state_guard.deref_mut();
 
         if cmd_header.read_ident != ar_state.read_id { return; }
         if Some(cmd_header.sector_idx) != ar_state.sector_idx { return; }
-        if ar_info.uuid != cmd_header.msg_ident { return; }
+        if self.info.uuid != cmd_header.msg_ident { return; }
 
         ar_state.acks += 1;
-        if ar_state.phase != ARPhase::Idle && ar_state.acks > ar_info.processes_count / 2 {
+        if ar_state.phase != ARPhase::Idle && ar_state.acks > self.info.processes_count / 2 {
             ar_state.acks = 0;
             ar_state.write_phase = false;
 
@@ -464,14 +445,10 @@ impl ARModule {
         trigger < sbeb, Broadcast | [READ_PROC, rid] >;
     */
     async fn read(
-        ar_info:            Arc<ARInfo>,
-        ar_state_ref:       Arc<Mutex<ARState>>, 
-        register_client:    Arc<dyn RegisterClient>,
-        metadata:           Arc<Mutex<Box<dyn StableStorage>>>,
-
-        cmd_header:         ClientCommandHeader,
+        &self,
+        cmd_header: ClientCommandHeader,
     ) {
-        let mut ar_state_guard = ar_state_ref.lock().await;
+        let mut ar_state_guard = self.state.lock().await;
         let ar_state = ar_state_guard.deref_mut();
 
         ar_state.read_id += 1;
@@ -480,22 +457,22 @@ impl ARModule {
         ar_state.phase = ARPhase::Reading;
 
         ARModule::store_metadata(
-            ar_info.uuid, 
+            self.info.uuid, 
             ar_state.read_id, 
             ar_state.sector_idx, 
-            metadata,
+            self.metadata.clone(),
         ).await;
 
         let broadcast_header = SystemCommandHeader {
-            process_identifier: ar_info.process_id,
-            msg_ident:  ar_info.uuid,
+            process_identifier: self.info.process_id,
+            msg_ident:  self.info.uuid,
             read_ident: ar_state.read_id,
             sector_idx: cmd_header.sector_idx
 
         };
 
         let content = SystemRegisterCommandContent::ReadProc;
-        ARModule::broadcast(ar_info, register_client, broadcast_header, content).await;
+        self.broadcast(broadcast_header, content).await;
     }
 
     /*
@@ -509,15 +486,11 @@ impl ARModule {
         trigger < sbeb, Broadcast | [READ_PROC, rid] >;
     */
     async fn write(
-        ar_info:            Arc<ARInfo>,
-        ar_state_ref:       Arc<Mutex<ARState>>, 
-        register_client:    Arc<dyn RegisterClient>,
-        metadata:           Arc<Mutex<Box<dyn StableStorage>>>,
-
-        cmd_header:         ClientCommandHeader,
-        data:               SectorVec,
+        &self,
+        cmd_header: ClientCommandHeader,
+        data:       SectorVec,
     ) {
-        let mut ar_state_guard = ar_state_ref.lock().await;
+        let mut ar_state_guard = self.state.lock().await;
         let ar_state = ar_state_guard.deref_mut();
 
         ar_state.read_id += 1;
@@ -527,21 +500,21 @@ impl ARModule {
         ar_state.phase = ARPhase::Writing;
 
         ARModule::store_metadata(
-            ar_info.uuid, 
+            self.info.uuid, 
             ar_state.read_id, 
             ar_state.sector_idx, 
-            metadata,
+            self.metadata.clone(),
         ).await;
         
         let broadcast_header = SystemCommandHeader {
-            process_identifier: ar_info.process_id,
-            msg_ident:  ar_info.uuid,
+            process_identifier: self.info.process_id,
+            msg_ident:  self.info.uuid,
             read_ident: ar_state.read_id,
             sector_idx: cmd_header.sector_idx
 
         };
         let content = SystemRegisterCommandContent::ReadProc;
-        ARModule::broadcast(ar_info, register_client, broadcast_header, content).await;
+        self.broadcast(broadcast_header, content).await;
     }
 
 
@@ -569,11 +542,11 @@ impl ARModule {
         writeval := _;
     */
     pub async fn new(
-        self_ident: u8,
-        metadata: Box<dyn StableStorage>,
-        register_client: Arc<dyn RegisterClient>,
-        sectors_manager: Arc<dyn SectorsManager>,
-        processes_count: usize,
+        self_ident:         u8,
+        metadata:           Box<dyn StableStorage>,
+        register_client:    Arc<dyn RegisterClient>,
+        sectors_manager:    Arc<dyn SectorsManager>,
+        processes_count:    usize,
 
     ) -> Self {
         let metadata = Arc::new(Mutex::new(metadata));
@@ -613,12 +586,7 @@ impl ARModule {
 
     
     async fn handle_client(
-        ar_info:            Arc<ARInfo>,
-        ar_state_ref:       Arc<Mutex<ARState>>, 
-        sectors_manager:    Arc<dyn SectorsManager>,
-        register_client:    Arc<dyn RegisterClient>,
-        metadata:           Arc<Mutex<Box<dyn StableStorage>>>,
-        
+        &self,
         cmd:                ClientRegisterCommand,
         operation_complete: Box<
                                 dyn FnOnce(OperationComplete) -> Pin<Box<dyn Future<Output = ()> + Send>>
@@ -627,7 +595,7 @@ impl ARModule {
                             >,
     ) {
         {
-            let mut ar_state_guard = ar_state_ref.lock().await;
+            let mut ar_state_guard = self.state.lock().await;
             let ar_state = ar_state_guard.deref_mut();
 
             ar_state.request_id = Some(cmd.header.request_identifier);
@@ -638,73 +606,10 @@ impl ARModule {
         let cmd_header = cmd.header;
         match cmd.content {
             ClientRegisterCommandContent::Read
-                => ARModule::read(
-                    ar_info, 
-                    ar_state_ref, 
-                    register_client, 
-                    metadata,
-                    cmd_header,
-                ).await,
+                => self.read(cmd_header).await,
 
             ClientRegisterCommandContent::Write { data }
-                => ARModule::write(
-                    ar_info, 
-                    ar_state_ref, 
-                    register_client, 
-                    metadata,
-                    cmd_header, 
-                    data,
-                ).await,
-        }
-    }
-
-    async fn handle_system(
-        ar_info:            Arc<ARInfo>,
-        ar_state_ref:       Arc<Mutex<ARState>>, 
-        sectors_manager:    Arc<dyn SectorsManager>,
-        register_client:    Arc<dyn RegisterClient>,
-
-        cmd:                SystemRegisterCommand,
-    ) {
-        let cmd_header = cmd.header;
-        match cmd.content {
-            SystemRegisterCommandContent::ReadProc 
-                => ARModule::read_proc(
-                    ar_info,
-                    sectors_manager,
-                    register_client,
-                    cmd_header
-                ).await,
-            
-            SystemRegisterCommandContent::Value { timestamp, write_rank, sector_data, } 
-                => ARModule::value(
-                    ar_info,
-                    ar_state_ref,
-                    sectors_manager,
-                    register_client,
-                    cmd_header,
-                    timestamp,
-                    write_rank,
-                    sector_data,
-                ).await,
-
-            SystemRegisterCommandContent::WriteProc { timestamp, write_rank, data_to_write, }
-                => ARModule::write_proc(
-                    ar_info,
-                    sectors_manager,
-                    register_client,
-                    cmd_header,
-                    timestamp,
-                    write_rank,
-                    data_to_write,
-                ).await,
-
-            SystemRegisterCommandContent::Ack
-                => ARModule::ack(        
-                    ar_info,
-                    ar_state_ref, 
-                    cmd_header,
-                ).await,
+                => self.write(cmd_header, data).await,
         }
     }
 
@@ -727,36 +632,36 @@ impl AtomicRegister for ARModule {
         >,
     ) {
         
-        ARModule::handle_client(
-            self.info.clone(), 
-            self.state.clone(), 
-            self.sectors_manager.clone(), 
-            self.register_client.clone(), 
-            self.metadata.clone(), 
-            cmd, 
-            operation_complete,
-        ).await;
+        self.handle_client(cmd, operation_complete).await;
     }
 
     /// Send system command to the register.
     async fn system_command(&mut self, cmd: SystemRegisterCommand) {
-        
-        ARModule::handle_system(
-            self.info.clone(), 
-            self.state.clone(), 
-            self.sectors_manager.clone(), 
-            self.register_client.clone(), 
-            cmd,
-        ).await;
+
+        let cmd_header = cmd.header;
+        match cmd.content {
+            SystemRegisterCommandContent::ReadProc 
+                => self.read_proc(cmd_header).await,
+            
+            SystemRegisterCommandContent::Value { timestamp, write_rank, sector_data, } 
+                => self.value(
+                    cmd_header,
+                    timestamp,
+                    write_rank,
+                    sector_data,
+                ).await,
+
+            SystemRegisterCommandContent::WriteProc { timestamp, write_rank, data_to_write, }
+                => self.write_proc(
+                    cmd_header,
+                    timestamp,
+                    write_rank,
+                    data_to_write,
+                ).await,
+
+            SystemRegisterCommandContent::Ack
+                => self.ack(cmd_header).await,
+        }
     }
 }
-
-fn is_none<T>(x: Option<T>) -> bool {
-    match x {
-        Some(_) => false,
-        None => true,
-    }
-}
-
-
 
